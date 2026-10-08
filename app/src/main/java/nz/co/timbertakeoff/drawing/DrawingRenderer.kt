@@ -15,6 +15,10 @@ import kotlin.math.min
 
 /** A single vector renderer for screen previews, PDF pages and Android printing. */
 object DrawingRenderer {
+    // PdfDocument quantises glyph advances at tiny font sizes. Shape text at a normal font
+    // resolution, then scale it back to paper millimetres so printed letters do not overlap.
+    private const val TEXT_UNITS_PER_MM = 100f
+
     fun draw(canvas: Canvas, sheet: DrawingSheet, widthPx: Float, heightPx: Float) {
         if (widthPx <= 0f || heightPx <= 0f) return
         val scale = min(widthPx / sheet.widthMm.toFloat(), heightPx / sheet.heightMm.toFloat())
@@ -49,12 +53,16 @@ object DrawingRenderer {
                 }
                 is DrawingElement.Text -> {
                     paint.style = Paint.Style.FILL
-                    paint.textSize = element.sizeMm.toFloat()
+                    paint.isSubpixelText = true
+                    paint.isLinearText = true
+                    paint.textSize = element.sizeMm.toFloat() * TEXT_UNITS_PER_MM
                     paint.typeface = Typeface.create("sans-serif", if (element.bold) Typeface.BOLD else Typeface.NORMAL)
                     paint.textAlign = when (element.align) { TextAlign.LEFT -> Paint.Align.LEFT; TextAlign.CENTER -> Paint.Align.CENTER; TextAlign.RIGHT -> Paint.Align.RIGHT }
                     canvas.save()
-                    canvas.rotate(element.rotationDegrees.toFloat(), element.x.toFloat(), element.y.toFloat())
-                    canvas.drawText(element.text, element.x.toFloat(), element.y.toFloat(), paint)
+                    canvas.translate(element.x.toFloat(), element.y.toFloat())
+                    canvas.rotate(element.rotationDegrees.toFloat())
+                    canvas.scale(1f / TEXT_UNITS_PER_MM, 1f / TEXT_UNITS_PER_MM)
+                    canvas.drawText(element.text, 0f, 0f, paint)
                     canvas.restore()
                 }
             }
