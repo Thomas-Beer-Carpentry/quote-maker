@@ -24,6 +24,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -59,10 +61,17 @@ internal fun Field(
 
 @Composable
 internal fun <T> Choice(label: String, value: T, options: List<T>, display: (T) -> String, onChange: (T) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var expanded by remember { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(bottom = 4.dp))
-        OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+        OutlinedButton(onClick = {
+            // A focusable popup must not restore an old text editor when it closes.
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+            expanded = true
+        }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
             Text(display(value), modifier = Modifier.weight(1f))
             Text("▾")
         }

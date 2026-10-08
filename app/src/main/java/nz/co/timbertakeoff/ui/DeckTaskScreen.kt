@@ -4,7 +4,10 @@ import android.content.Context
 import android.print.PrintManager
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -60,10 +64,21 @@ internal fun orientationLabel(orientation: FramingOrientation): String = when (o
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEntity?, model: EstimatorViewModel, onExportPdf: (List<DrawingSheet>, String) -> Unit) {
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
     var tab by rememberSaveable(task.id) { mutableStateOf(0) }
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(tab, imeVisible) {
+        if (tab != 1) {
+            // Popup dismissal can complete a pending IME show after the tab click's hide.
+            // React to actual insets after the parameter editors have left composition.
+            withFrameNanos { }
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
+        }
+    }
     val parsed = remember(task.id, task.inputJson) { runCatching { DeckDraft.fromJson(task.inputJson) } }
     val draft = parsed.getOrNull()
     // A new input key gets a fresh empty state immediately; an obsolete valid plan is never displayed.

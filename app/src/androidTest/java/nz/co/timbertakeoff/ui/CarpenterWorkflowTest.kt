@@ -189,12 +189,17 @@ class CarpenterWorkflowTest {
     }
 
     private fun waitForKeyboardHidden() {
-        compose.waitUntil(60_000) {
-            var visible = false
-            scenario.onActivity { activity ->
-                visible = ViewCompat.getRootWindowInsets(activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        try {
+            compose.waitUntil(60_000) {
+                var visible = false
+                scenario.onActivity { activity ->
+                    visible = ViewCompat.getRootWindowInsets(activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+                }
+                !visible
             }
-            !visible
+        } catch (error: Exception) {
+            screenshot("workflow-keyboard-failure.png")
+            throw error
         }
     }
 }
