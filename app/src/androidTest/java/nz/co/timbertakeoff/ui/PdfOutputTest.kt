@@ -18,7 +18,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 /** Tests the real Android PDF canvas/exporter and reopens every page with Android's PDF renderer. */
 @RunWith(AndroidJUnit4::class)
@@ -34,7 +33,7 @@ class PdfOutputTest {
         for (size in SheetSize.entries) {
             val sheets = DrawingGenerator.generate(result, title, size)
             assertTrue("Combined drawing set includes plans, section and material schedule", sheets.map { it.code }.containsAll(listOf("D01", "D02", "D03", "M01")))
-            val file = File(checkNotNull(context.getExternalFilesDir(null)), "smoke-${size.name}.pdf")
+            val file = deviceArtifact(context, "smoke-${size.name}.pdf")
             file.outputStream().use { PdfExporter.write(it, sheets) }
             assertTrue("Export creates a nonempty PDF", file.length() > 1000)
             ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor ->

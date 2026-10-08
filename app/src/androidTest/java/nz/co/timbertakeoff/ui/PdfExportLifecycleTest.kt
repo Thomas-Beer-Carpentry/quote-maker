@@ -23,7 +23,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 
 /** Exercises the same pending snapshot and result handler as the system document picker. */
 @RunWith(AndroidJUnit4::class)
@@ -41,7 +40,7 @@ class PdfExportLifecycleTest {
             beforeRotation.preparePdfExport(sheets)
         }
         activity.scenario.recreate()
-        val output = File(checkNotNull(context.getExternalFilesDir(null)), "smoke-rotation.pdf")
+        val output = deviceArtifact(context, "smoke-rotation.pdf")
         lateinit var afterRotation: EstimatorViewModel
         activity.scenario.onActivity {
             afterRotation = ViewModelProvider(it)[EstimatorViewModel::class.java]

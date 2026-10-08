@@ -28,7 +28,6 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
 import java.util.UUID
 
 /** Drives the real Activity, Compose forms, Room repository and calculated drawing workspace. */
@@ -178,7 +177,7 @@ class CarpenterWorkflowTest {
         assertNotNull("Emulator should supply a screen capture", bitmap)
         checkNotNull(bitmap).let { image ->
             try {
-                val target = File(checkNotNull(app.getExternalFilesDir(null)), name)
+                val target = deviceArtifact(app, name)
                 target.outputStream().use { assertTrue("Write screenshot $name", image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             } finally { image.recycle() }
         }
