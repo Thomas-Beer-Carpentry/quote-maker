@@ -12,6 +12,8 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.flow.first
@@ -62,6 +64,7 @@ class CarpenterWorkflowTest {
         replace("Task name", deckName, scroll = false)
         click("Create")
         waitForText("Construction drawing workspace")
+        waitForKeyboardHidden()
 
         click("Parameters")
         replace("1. Deck width (mm)", "")
@@ -80,11 +83,13 @@ class CarpenterWorkflowTest {
         compose.onNode(hasText("Widthways · bearers parallel to deck width") and hasClickAction()).performClick()
         click("Drawings")
         waitForText("Construction drawing workspace")
+        waitForKeyboardHidden()
         click("Drawing sheet", scroll = true, clickNode = false)
         screenshot("workflow-01-framing.png")
 
         click("Materials")
         waitForText("Exact material takeoff")
+        waitForKeyboardHidden()
         compose.onAllNodesWithText("Decking")[0].performScrollTo().performClick()
         waitForText("140 × 19 mm · finished 140 mm × 19 mm", substring = true)
         screenshot("workflow-02-materials.png")
@@ -180,6 +185,16 @@ class CarpenterWorkflowTest {
                 val target = deviceArtifact(app, name)
                 target.outputStream().use { assertTrue("Write screenshot $name", image.compress(Bitmap.CompressFormat.PNG, 100, it)) }
             } finally { image.recycle() }
+        }
+    }
+
+    private fun waitForKeyboardHidden() {
+        compose.waitUntil(60_000) {
+            var visible = false
+            scenario.onActivity { activity ->
+                visible = ViewCompat.getRootWindowInsets(activity.window.decorView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+            }
+            !visible
         }
     }
 }

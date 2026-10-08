@@ -28,6 +28,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.CancellationException
@@ -59,6 +61,8 @@ internal fun orientationLabel(orientation: FramingOrientation): String = when (o
 
 @Composable
 internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEntity?, model: EstimatorViewModel, onExportPdf: (List<DrawingSheet>, String) -> Unit) {
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     var tab by rememberSaveable(task.id) { mutableStateOf(0) }
     val parsed = remember(task.id, task.inputJson) { runCatching { DeckDraft.fromJson(task.inputJson) } }
     val draft = parsed.getOrNull()
@@ -87,7 +91,11 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
         )
         ScrollableTabRow(selectedTabIndex = tab, edgePadding = 12.dp) {
             listOf("Drawings", "Parameters", "Materials").forEachIndexed { index, title ->
-                Tab(selected = tab == index, onClick = { tab = index }, text = { Text(title) })
+                Tab(selected = tab == index, onClick = {
+                    focusManager.clearFocus(force = true)
+                    keyboard?.hide()
+                    tab = index
+                }, text = { Text(title) })
             }
         }
         when (tab) {
@@ -98,9 +106,14 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
                 if (result != null) OrientationComparison(result)
             }
             2 -> ScreenColumn {
-                OutcomeNotice(outcome.value)
+                if (result == null) OutcomeNotice(outcome.value)
                 if (result != null) {
                     Materials(result.materials)
+                    var showAssumptions by remember(task.id) { mutableStateOf(false) }
+                    TextButton(onClick = { showAssumptions = !showAssumptions }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+                        Text(if (showAssumptions) "Hide calculation assumptions" else "Show calculation assumptions")
+                    }
+                    if (showAssumptions) result.notes.forEach { Notice(it) }
                     Text("Task consolidated summary", style = MaterialTheme.typography.titleLarge)
                     Materials(MaterialConsolidator.consolidate(result.materials), consolidated = true)
                 }
