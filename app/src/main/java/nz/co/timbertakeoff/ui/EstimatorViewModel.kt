@@ -44,7 +44,7 @@ class EstimatorViewModel(application: Application) : AndroidViewModel(applicatio
     private val writes = Channel<suspend () -> Unit>(Channel.UNLIMITED)
 
     init {
-        viewModelScope.launch {
+        (application as EstimatorApplication).persistenceScope.launch {
             for (write in writes) {
                 try {
                     write()
@@ -57,6 +57,12 @@ class EstimatorViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         }
+    }
+
+    override fun onCleared() {
+        // Closing the channel drains accepted writes; clearing the Activity must not cancel them.
+        writes.close()
+        super.onCleared()
     }
 
     private fun enqueue(write: suspend () -> Unit) {

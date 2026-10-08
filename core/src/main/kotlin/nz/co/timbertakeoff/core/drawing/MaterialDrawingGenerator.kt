@@ -5,8 +5,10 @@ import nz.co.timbertakeoff.core.*
 data class CutScheduleEntry(val lengthMm: Double, val pieces: Int)
 /** Full exact lengths are retained; rounding here changes display only, never takeoff quantities. */
 object CutSchedule {
-    fun entries(lengthsMm: List<Double>): List<CutScheduleEntry> = lengthsMm.groupingBy { it }.eachCount()
-        .map { (length, pieces) -> CutScheduleEntry(length, pieces) }.sortedBy { it.lengthMm }
+    // Equal geometry can differ by floating-point noise. Group well below displayed
+    // millimetre precision; raw takeoff lengths stay untouched.
+    fun entries(lengthsMm: List<Double>): List<CutScheduleEntry> = lengthsMm.groupBy { kotlin.math.round(it * 1_000_000.0) / 1_000_000.0 }
+        .map { (_, cuts) -> CutScheduleEntry(cuts.average(), cuts.size) }.sortedBy { it.lengthMm }
 }
 
 internal object MaterialDrawingGenerator {

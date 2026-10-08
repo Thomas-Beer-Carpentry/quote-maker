@@ -6,7 +6,7 @@ Native Android, offline carpentry estimating. Version 1 calculates freestanding 
 
 ## Build from this repository
 
-Every push to `main` and pull request runs [Android build and tests](../../actions/workflows/android.yml). Open **Actions → Android build and tests → the latest successful run → Artifacts → quote-maker-debug-apk**, unzip the download, and install `app-debug.apk` on an Android 8.0+ device. Android may ask you to allow installations from your browser/file manager. This is a development APK, not a Play Store release.
+Every push to `main` and pull request runs [Android build and tests](https://github.com/Thomas-Beer-Carpentry/quote-maker/actions/workflows/android.yml). Open **Actions → Android build and tests → the latest successful run → Artifacts → quote-maker-debug-apk**, unzip the download, and install `app-debug.apk` on an Android 8.0+ device. Android may ask you to allow installations from your browser/file manager. This is a development APK, not a Play Store release.
 
 The workflow compiles the app, runs calculation and drawing tests, runs Android lint, and produces real vector SVG examples from the calculation engine. A second job runs Room persistence, phone workflow and PDF tests on an Android emulator. Test results and sample plans are separate downloadable artifacts. A source commit alone does not establish that its checks passed; inspect the run status.
 
@@ -25,7 +25,7 @@ Command line:
 ./gradlew :core:sampleDrawings
 ```
 
-The standard Gradle wrapper targets 8.13. While the initial repository build bootstraps its wrapper JAR, an installed Gradle 8.13 can run `gradle wrapper --gradle-version 8.13` followed by the commands above. Android Studio uses the same root project.
+The complete standard Gradle wrapper is included and targets 8.13. Android Studio and CI use the same root project.
 
 ## Use
 

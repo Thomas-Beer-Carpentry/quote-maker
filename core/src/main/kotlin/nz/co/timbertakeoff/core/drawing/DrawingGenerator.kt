@@ -96,6 +96,7 @@ object DrawingGenerator {
         y = b.note(x, y, 61.0, "All four boundaries have two full members. N1 nogs use joist profile.") + 3.0
         val bearerSpacing = if (g.bearerPositionsMm.size == 1) "Single bearer line." else "Bearer spacing ${mm(g.actualBearerSpacingMm)} mm actual."
         y = b.note(x, y, 61.0, "Joist spacing ${mm(g.actualJoistSpacingMm)} mm maximum actual. $bearerSpacing") + 3.0
+        y = b.note(x, y, 61.0, "Joist end CT: ${mm(g.joistCantileverMm)} mm side boundaries; ${mm(g.joistCantileverMm - 2.0 * input.joist.thicknessMm)} mm internal cut ends, both ends.") + 3.0
         y = b.note(x, y, 61.0, "125 × 125 piles: ${g.piles.size}. Bearer end cantilevers 200 mm both ends.") + 3.0
         y = b.note(x, y, 61.0, "CT = cantilever to bearer pair centreline. CL = member centreline. Cross bars indicate supported joins.") + 3.0
         if (y + 18.0 < size.heightMm - 45.0) b.note(x, y, 61.0, "Bearer joins are staggered between the doubled members. All framing cuts ≤ 6,000 mm.")

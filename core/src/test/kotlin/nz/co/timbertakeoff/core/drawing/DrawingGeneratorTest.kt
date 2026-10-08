@@ -6,6 +6,15 @@ import org.junit.Test
 import kotlin.math.abs
 
 class DrawingGeneratorTest {
+    @Test fun `equal cuts group despite numerical noise while retaining their total`() {
+        val cuts = listOf(379.09090909090907, 379.0909090909091, 379.090909090909, 379.09090909090946)
+        val entries = CutSchedule.entries(cuts)
+        assertEquals(1, entries.size)
+        assertEquals(4, entries.single().pieces)
+        assertEquals(cuts.sum(), entries.sumOf { it.lengthMm * it.pieces }, 0.000000001)
+        assertEquals(2, CutSchedule.entries(listOf(1000.0, 1000.01)).size)
+    }
+
     private fun result(input: DeckInput = DeckInput()): DeckResult {
         val outcome = DeckCalculator.calculate(input)
         assertTrue("Expected valid deck: $outcome", outcome is CalculationOutcome.Success)
@@ -52,6 +61,8 @@ class DrawingGeneratorTest {
         assertTrue(texts(changed[0]).contains("5200"))
         assertTrue(texts(changed[1]).contains("3940"))
         assertTrue(texts(changed[1]).contains("5240"))
+        assertTrue(texts(initial[0]).joinToString(" ").contains("180 mm side boundaries"))
+        assertTrue(texts(initial[0]).joinToString(" ").contains("90 mm internal"))
     }
 
     @Test fun `decking scene contains every individual board in the calculated orientation`() {

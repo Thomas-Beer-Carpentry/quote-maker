@@ -32,14 +32,8 @@ jobs:
           gradle-version: '8.13'
       - name: Install Android SDK
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
-      - name: Bootstrap standard Gradle wrapper
-        run: |
-          gradle wrapper --gradle-version 8.13 --distribution-type bin
-          chmod +x gradlew
-          echo WRAPPER_BASE64_BEGIN
-          base64 -w 0 gradle/wrapper/gradle-wrapper.jar
-          echo
-          echo WRAPPER_BASE64_END
+      - name: Verify committed Gradle wrapper
+        run: ./gradlew --version
       - name: Calculation tests, drawings, APK and lint
         run: ./gradlew :core:test :core:sampleDrawings :app:assembleDebug :app:assembleDebugAndroidTest :app:lintDebug --stacktrace
       - name: Downloadable Android app
@@ -87,7 +81,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
-            gradle :app:connectedDebugAndroidTest --stacktrace
+            ./gradlew :app:connectedDebugAndroidTest --stacktrace
             mkdir -p app/build/device-screenshots
             adb pull /sdcard/Android/data/nz.co.timbertakeoff/files/ app/build/device-screenshots/ || true
       - name: Device test reports and screenshots
