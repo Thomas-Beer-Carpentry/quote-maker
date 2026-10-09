@@ -8,6 +8,8 @@ fun main(args: Array<String>) {
     val directory = File(args.firstOrNull() ?: "build/sample-drawings").apply { mkdirs() }
     val examples = listOf(
         "" to DeckInput(),
+        "decking-setout-" to DeckInput(widthMm = 535.0, lengthMm = 4800.0,
+            decking = Profiles.decking[1], orientation = FramingOrientation.LENGTHWAYS),
         "picture-frame-" to DeckInput(decking = Profiles.decking[1], pictureFrame = true),
         "bracket-picture-frame-" to DeckInput(decking = Profiles.decking[1], pictureFrame = true,
             pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS, orientation = FramingOrientation.WIDTHWAYS)

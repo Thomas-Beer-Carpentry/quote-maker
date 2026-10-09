@@ -38,15 +38,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import nz.co.timbertakeoff.core.CalculationOutcome
 import nz.co.timbertakeoff.core.DeckResult
+import nz.co.timbertakeoff.core.DeckingSetoutCalculator
 import nz.co.timbertakeoff.core.FramingOrientation
 import nz.co.timbertakeoff.core.OrientationAlternative
 import nz.co.timbertakeoff.core.PileConnection
@@ -62,6 +66,7 @@ import nz.co.timbertakeoff.data.TaskEntity
 import nz.co.timbertakeoff.drawing.DrawingPrintAdapter
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.LocalDate
+import kotlin.math.abs
 
 internal fun orientationLabel(orientation: FramingOrientation): String = when (orientation) {
     FramingOrientation.AUTOMATIC -> "Automatic"
@@ -335,6 +340,7 @@ private fun DrawingWorkspace(result: DeckResult, job: JobEntity?, client: Client
                 val label = if (result.input.pictureFrame) "Ripped first infill board" else "Ripped starting board"
                 Text("$label: ${number(result.geometry.startingBoardWidthMm, 2)} mm", style = MaterialTheme.typography.bodySmall)
             }
+            DeckingSetoutMeasurements(result)
             Choice("Print / PDF sheet size", sheetSize, SheetSize.entries, { if (it == SheetSize.A3) "A3 landscape · preferred" else "A4 landscape" }, { sheetSizeName = it.name })
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 Button(
@@ -361,5 +367,65 @@ private fun DrawingWorkspace(result: DeckResult, job: JobEntity?, client: Client
         OrientationComparison(result)
         result.notes.forEach { Notice(it) }
         Notice("Drawings are preliminary estimating / set-out information, not verified construction documentation. No structural compliance has been checked.")
+    }
+}
+
+@Composable
+private fun DeckingSetoutMeasurements(result: DeckResult) {
+    val setout = remember(result) { DeckingSetoutCalculator.calculate(result) }
+    var expanded by rememberSaveable(result.input.hashCode()) { mutableStateOf(false) }
+    var page by rememberSaveable(result.input.hashCode()) { mutableStateOf(0) }
+    val marksPerPage = 25
+    val pageCount = (setout.marks.size + marksPerPage - 1) / marksPerPage
+    OutlinedButton(
+        onClick = { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp),
+    ) {
+        Text(if (expanded) "Hide decking set-out measurements" else "Show decking set-out measurements")
+    }
+    if (!expanded) return
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Running decking measurements", style = MaterialTheme.typography.titleMedium)
+            val edge = if (setout.markAlongX) "left" else "top"
+            val boardType = if (result.input.pictureFrame) "infill" else "decking"
+            val datumPosition = when {
+                abs(setout.datumOffsetMm) < 0.0005 -> "on the $edge framing edge"
+                setout.datumOffsetMm < 0.0 -> "${number(abs(setout.datumOffsetMm))} mm outside the $edge framing edge"
+                else -> "${number(setout.datumOffsetMm)} mm inside the $edge framing edge"
+            }
+            Text("Datum 0 is the starting edge of the first $boardType board, $datumPosition.", style = MaterialTheme.typography.bodyMedium)
+            val direction = if (setout.markAlongX) "right side (+X)" else "lower side (+Y)"
+            Notice("Mark each joist from the same datum. Place each board on the $direction of its mark, toward the next mark.")
+            Text("Equal board gap: ${number(setout.gapMm)} mm. Measure every mark from datum 0; values include the actual first-board width and are rounded only for display.", style = MaterialTheme.typography.bodySmall)
+            Text("The D05 decking set-out sheets include the full running measurement schedule for printing.", style = MaterialTheme.typography.bodySmall)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Board", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                Text("Mark (mm)", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                Text("Width (mm)", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+            }
+            setout.marks.drop(page * marksPerPage).take(marksPerPage).forEach { mark ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 44.dp)
+                        .testTag("decking-setout-board-${mark.boardNumber}")
+                        .semantics(mergeDescendants = true) {},
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Board ${mark.boardNumber}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Text("${number(mark.runningMm)} mm", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                    Text("${number(mark.widthMm)} mm", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                }
+            }
+            if (pageCount > 1) {
+                val first = page * marksPerPage + 1
+                val last = minOf((page + 1) * marksPerPage, setout.marks.size)
+                Text("Board marks $first–$last of ${setout.marks.size}", style = MaterialTheme.typography.bodySmall)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedButton(onClick = { page -= 1 }, enabled = page > 0, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("Previous marks") }
+                    OutlinedButton(onClick = { page += 1 }, enabled = page + 1 < pageCount, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) { Text("Next marks") }
+                }
+            }
+        }
     }
 }

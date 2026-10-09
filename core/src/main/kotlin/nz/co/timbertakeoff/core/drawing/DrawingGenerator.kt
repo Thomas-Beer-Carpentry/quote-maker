@@ -9,8 +9,9 @@ object DrawingGenerator {
     fun generate(result: DeckResult, title: DrawingTitle = DrawingTitle(), sheetSize: SheetSize = SheetSize.A3): List<DrawingSheet> =
         listOf(framing(result, title, sheetSize), decking(result, title, sheetSize), section(result, title, sheetSize)) +
             MaterialDrawingGenerator.generate(result, title, sheetSize) +
-            if (result.geometry.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
-                listOf(pictureFrameEdgeDetail(result, title, sheetSize)) else emptyList()
+            (if (result.geometry.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
+                listOf(pictureFrameEdgeDetail(result, title, sheetSize)) else emptyList()) +
+            DeckingSetoutDrawingGenerator.generate(result, title, sheetSize)
 
     internal fun frame(builder: SheetBuilder, code: String, drawing: String, title: DrawingTitle, scale: Double?) {
         val w = builder.size.widthMm
@@ -195,13 +196,16 @@ object DrawingGenerator {
             else "START BOARD: RIP TO ${mm(g.startingBoardWidthMm)} mm. Remaining boards full width."
         } else "All boards are full width; no starting rip required.", bold = true) + 3.0
         y = b.note(x, y, 61.0, "Decking overhang ${mm(i.overhangMm)} mm on all four sides. Dashed rectangle is outside framing.") + 3.0
-        b.note(x, y, 61.0, "Decking joins and purchasing stock lengths are excluded. No waste allowance.")
+        y = b.note(x, y, 61.0, "Running board marks: D05. Measure from DATUM 0. Boards go AFTER each line in the set-out arrow direction.", bold = true) + 3.0
+        if (y + 12.0 < size.heightMm - 40.0)
+            b.note(x, y, 61.0, "Decking joins and purchasing stock lengths are excluded. No waste allowance.")
         // Overhang details remain legible even where their physical scale is very small.
         val topX = plan.x + width / plan.scale * 0.7
         leader(b, topX, plan.y + i.overhangMm / plan.scale, topX + 8.0, plan.y - 7.0, "${mm(i.overhangMm)} OVERHANG", false)
         val leftY = plan.y + length / plan.scale * 0.65
         leader(b, plan.x + i.overhangMm / plan.scale, leftY, plan.x - 9.0, leftY + 9.0, "${mm(i.overhangMm)}", true)
         val firstP = plan.point(Point(first.origin.x + i.overhangMm, first.origin.y + i.overhangMm))
+        deckingDatum(b, plan, firstP, first)
         val ripAlongRun = min(5.0, first.lengthMm / plan.scale / 2.0)
         if (ripped) leader(b, firstP.x + (if (alongX) ripAlongRun else first.widthMm / plan.scale / 2.0), firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else ripAlongRun), plan.x + 8.0, plan.y - 15.0, "${if (i.pictureFrame) "INFILL RIP" else "START"} ${mm(first.widthMm)}", false)
         if (i.pictureFrame) {
@@ -212,6 +216,24 @@ object DrawingGenerator {
         }
         scaleBar(b, plan, size)
         return b.sheet("D02", "Decking plan", plan.scale)
+    }
+
+    /** A leading-edge datum and positive across-board arrow match the running marks on D05. */
+    private fun deckingDatum(b: SheetBuilder, plan: PlanTransform, origin: Point, first: DeckBoard) {
+        val alongRun = first.lengthMm / plan.scale * 0.3
+        if (first.runsAlongX) {
+            val x = origin.x + alongRun
+            b.line(x - 4.0, origin.y, x + 4.0, origin.y, 0.45)
+            b.text(x, origin.y - 3.0, "DATUM 0", 2.2, TextAlign.CENTER, bold = true)
+            arrow(b, x, origin.y + 1.0, x, origin.y + 16.0)
+            b.text(x + 3.0, origin.y + 13.0, "SET-OUT +", 2.2, bold = true)
+        } else {
+            val y = origin.y + alongRun
+            b.line(origin.x, y - 4.0, origin.x, y + 4.0, 0.45)
+            b.text(origin.x + 1.0, y - 6.0, "DATUM 0", 2.2, bold = true)
+            arrow(b, origin.x + 1.0, y, origin.x + 16.0, y)
+            b.text(origin.x + 3.0, y + 4.0, "SET-OUT +", 2.2, bold = true)
+        }
     }
 
     private fun section(result: DeckResult, title: DrawingTitle, size: SheetSize): DrawingSheet {

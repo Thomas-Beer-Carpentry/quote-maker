@@ -95,7 +95,8 @@ class DrawingGeneratorTest {
         val cuts = (1..100).map { 1000.0 + it / 10.0 }
         val custom = base.copy(materials = listOf(MaterialLine(MaterialCategory.JOISTS,
             MaterialKey("Timber", "140 × 45 mm · radiata", "lm"), cuts.sum() / 1000.0, cuts)))
-        val schedules = DrawingGenerator.generate(custom, sheetSize = SheetSize.A4).drop(3)
+        val schedules = DrawingGenerator.generate(custom, sheetSize = SheetSize.A4)
+            .filter { it.code == "M01" || it.code.startsWith("M01.") }
         assertTrue("A long cut schedule needs continuation pages", schedules.size > 1)
         val texts = schedules.flatMap(::texts)
         cuts.forEach { cut -> assertTrue("Missing cut $cut", texts.contains("1 × ${DrawingGenerator.mm(cut)} mm")) }
@@ -107,7 +108,8 @@ class DrawingGeneratorTest {
 
     @Test fun `material schedule starts with combined profile totals before category cuts`() {
         SheetSize.entries.forEach { size ->
-            val scheduleTexts = DrawingGenerator.generate(result(), sheetSize = size).drop(3).flatMap(::texts)
+            val scheduleTexts = DrawingGenerator.generate(result(), sheetSize = size)
+                .filter { it.code == "M01" || it.code.startsWith("M01.") }.flatMap(::texts)
             val overallStart = scheduleTexts.indexOf("OVERALL MATERIALS")
             val breakdownStart = scheduleTexts.indexOf("MATERIAL BREAKDOWN")
             assertTrue("Overall materials must precede the breakdown", overallStart >= 0 && breakdownStart > overallStart)
