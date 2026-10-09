@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -85,7 +86,10 @@ class LargeDeckSetoutWorkflowTest {
                 .assert(hasText("$mark mm"))
                 .assert(hasText("140 mm"))
         }
-        compose.onNodeWithText("Running decking measurements").performScrollTo()
+        // Scroll to the last of the four marks so the screen capture shows the actual
+        // working schedule, rather than stopping with only its heading at the bottom.
+        compose.onNodeWithTag("decking-setout-board-4").performScrollTo()
+        for (board in 1..4) compose.onNodeWithTag("decking-setout-board-$board").assertIsDisplayed()
         screenshot("decking-setout-running-marks.png")
         click("Hide decking set-out measurements", scroll = true)
         compose.onNodeWithTag("decking-setout-board-1").assertDoesNotExist()

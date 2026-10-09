@@ -101,6 +101,56 @@ class DeckingSetoutDrawingTest {
         assertEquals(boards.size, printed.size)
     }
 
+    @Test fun `datum setout and board direction labels clear narrow board linework and other callouts`() {
+        listOf(FramingOrientation.LENGTHWAYS, FramingOrientation.WIDTHWAYS).forEach { orientation ->
+            val narrow = DeckInput(
+                widthMm = if (orientation == FramingOrientation.LENGTHWAYS) 535.0 else 4800.0,
+                lengthMm = if (orientation == FramingOrientation.LENGTHWAYS) 4800.0 else 535.0,
+                decking = Profiles.decking[1], orientation = orientation
+            )
+            val frame = DeckInput(widthMm = 3670.0, decking = Profiles.decking[1], pictureFrame = true,
+                orientation = orientation)
+            listOf(narrow, frame).forEach { input -> SheetSize.entries.forEach { size ->
+                val sheet = DrawingGenerator.generate(result(input), sheetSize = size)[1]
+                val perimeter = sheet.elements.filterIsInstance<DrawingElement.Rect>().single { it.weightMm == 0.4 }
+                val text = sheet.elements.filterIsInstance<DrawingElement.Text>()
+                val annotations = listOf("DATUM 0", "SET-OUT +", "BOARD DIRECTION").map { label ->
+                    text.single { it.text == label }
+                }
+                annotations.forEach { label ->
+                    val box = textBounds(label)
+                    assertTrue("${label.text} must sit outside decking linework at ${size.name}",
+                        box.right < perimeter.x || box.left > perimeter.x + perimeter.width ||
+                            box.bottom < perimeter.y || box.top > perimeter.y + perimeter.height)
+                }
+                for (i in annotations.indices) for (j in i + 1 until annotations.size)
+                    assertSeparate(annotations[i], annotations[j])
+                val callouts = text.filter { it.text.endsWith(" OVERHANG") || it.text.startsWith("INFILL RIP ") ||
+                    it.text.startsWith("START ") || it.text == "PF" }
+                annotations.forEach { label -> callouts.forEach { assertSeparate(label, it) } }
+                assertEquals("Direction label is legible without rotating through board lines", 0.0,
+                    annotations.single { it.text == "BOARD DIRECTION" }.rotationDegrees, 0.0)
+            } }
+        }
+    }
+
+    private data class TextBox(val left: Double, val top: Double, val right: Double, val bottom: Double)
+    private fun textBounds(text: DrawingElement.Text): TextBox {
+        val width = text.text.length * text.sizeMm * 0.65
+        val left = text.x - when (text.align) {
+            TextAlign.LEFT -> 0.0
+            TextAlign.CENTER -> width / 2.0
+            TextAlign.RIGHT -> width
+        }
+        return TextBox(left, text.y - text.sizeMm, left + width, text.y + text.sizeMm * 0.2)
+    }
+    private fun assertSeparate(first: DrawingElement.Text, second: DrawingElement.Text) {
+        val a = textBounds(first)
+        val b = textBounds(second)
+        assertTrue("Labels '${first.text}' and '${second.text}' must remain separate",
+            a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top)
+    }
+
     private fun result(input: DeckInput): DeckResult {
         val outcome = DeckCalculator.calculate(input)
         assertTrue("Expected valid fixture: $outcome", outcome is CalculationOutcome.Success)

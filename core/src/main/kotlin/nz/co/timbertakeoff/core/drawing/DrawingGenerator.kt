@@ -174,12 +174,18 @@ object DrawingGenerator {
             i.widthMm / plan.scale, i.lengthMm / plan.scale, 0.25, dashed = true)
         overallDimensions(b, plan, width, length)
         val cx = plan.x + width / plan.scale / 2.0
-        val cy = plan.y + length / plan.scale / 2.0
+        val directionY = plan.y + length / plan.scale + 11.0
         val infill = g.boards.filter { it.role == DeckBoardRole.INFILL }
         val first = infill.first()
         val alongX = first.runsAlongX
-        if (alongX) { arrow(b, cx - 10.0, cy, cx + 10.0, cy); b.text(cx, cy - 3.0, "BOARD DIRECTION", 2.5, TextAlign.CENTER) }
-        else { arrow(b, cx, cy + 10.0, cx, cy - 10.0); b.text(cx + 3.0, cy, "BOARD DIRECTION", 2.5, rotation = -90.0) }
+        // Keep the direction key clear of individual board linework, including narrow decks.
+        if (alongX) {
+            arrow(b, cx - 10.0, directionY, cx + 10.0, directionY)
+            b.text(cx, directionY - 3.0, "BOARD DIRECTION", 2.5, TextAlign.CENTER)
+        } else {
+            arrow(b, cx, directionY + 7.0, cx, directionY - 7.0)
+            b.text(cx + 4.0, directionY + 1.0, "BOARD DIRECTION", 2.5)
+        }
         val x = size.widthMm - 77.0
         var y = 44.0
         y = b.note(x, y, 61.0, "DECKING SET-OUT", 3.0, true) + 3.0
@@ -224,15 +230,17 @@ object DrawingGenerator {
         if (first.runsAlongX) {
             val x = origin.x + alongRun
             b.line(x - 4.0, origin.y, x + 4.0, origin.y, 0.45)
-            b.text(x, origin.y - 3.0, "DATUM 0", 2.2, TextAlign.CENTER, bold = true)
+            b.line(x, plan.y - 1.0, x, origin.y, 0.13)
+            b.text(x - 3.0, plan.y - 4.0, "DATUM 0", 2.2, TextAlign.RIGHT, bold = true)
+            b.text(x + 3.0, plan.y - 4.0, "SET-OUT +", 2.2, bold = true)
             arrow(b, x, origin.y + 1.0, x, origin.y + 16.0)
-            b.text(x + 3.0, origin.y + 13.0, "SET-OUT +", 2.2, bold = true)
         } else {
             val y = origin.y + alongRun
             b.line(origin.x, y - 4.0, origin.x, y + 4.0, 0.45)
-            b.text(origin.x + 1.0, y - 6.0, "DATUM 0", 2.2, bold = true)
+            b.line(plan.x - 2.0, y, origin.x, y, 0.13)
+            b.text(plan.x - 4.0, y - 6.0, "DATUM 0", 2.2, TextAlign.RIGHT, bold = true)
+            b.text(plan.x - 4.0, y + 4.0, "SET-OUT +", 2.2, TextAlign.RIGHT, bold = true)
             arrow(b, origin.x + 1.0, y, origin.x + 16.0, y)
-            b.text(origin.x + 3.0, y + 4.0, "SET-OUT +", 2.2, bold = true)
         }
     }
 
