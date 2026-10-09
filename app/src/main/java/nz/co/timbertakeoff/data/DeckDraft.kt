@@ -5,6 +5,7 @@ import nz.co.timbertakeoff.core.CalculationOutcome
 import nz.co.timbertakeoff.core.DeckInput
 import nz.co.timbertakeoff.core.DeckingProfile
 import nz.co.timbertakeoff.core.FramingOrientation
+import nz.co.timbertakeoff.core.PileConnection
 import nz.co.timbertakeoff.core.Profiles
 import nz.co.timbertakeoff.core.TaskLibrary
 import org.json.JSONObject
@@ -32,7 +33,9 @@ data class DeckDraft(
     val orientation: FramingOrientation = defaultInput.orientation,
     val overhangMm: String = numericText(defaultInput.overhangMm),
     val screwSpecification: String = defaultInput.screwSpecification,
-    val concreteYieldM3PerBag: String = numericText(defaultInput.concreteYieldM3PerBag)
+    val concreteYieldM3PerBag: String = numericText(defaultInput.concreteYieldM3PerBag),
+    val pileConnection: PileConnection = defaultInput.pileConnection,
+    val pictureFrame: Boolean = defaultInput.pictureFrame
 ) {
     fun withDeckingProfile(profile: DeckingProfile): DeckDraft = copy(
         deckingProfileId = profile.nominal,
@@ -59,7 +62,10 @@ data class DeckDraft(
         val spacing = parse(maxJoistSpacingMm, "Maximum joist spacing (mm)")
         val boardWidth = parse(actualDeckingWidthMm, "Actual finished decking width (mm)")
         val overhang = parse(overhangMm, "Decking overhang (mm)", allowZero = true)
-        val yield = parse(concreteYieldM3PerBag, "Concrete yield per 20 kg bag (m³)")
+        // Keep the raw supplier yield for switching back to holes, but it is not a bracket input.
+        val yield = if (pileConnection == PileConnection.CONCRETE_FOOTINGS) {
+            parse(concreteYieldM3PerBag, "Concrete yield per 20 kg bag (m³)")
+        } else defaultInput.concreteYieldM3PerBag
         val bearer = Profiles.framing.find { it.name == bearerProfileId }
         val joist = Profiles.framing.find { it.name == joistProfileId }
         val decking = Profiles.decking.find { it.nominal == deckingProfileId }
@@ -82,7 +88,9 @@ data class DeckDraft(
             orientation = orientation,
             overhangMm = overhang,
             screwSpecification = screwSpecification.trim(),
-            concreteYieldM3PerBag = yield
+            concreteYieldM3PerBag = yield,
+            pileConnection = pileConnection,
+            pictureFrame = pictureFrame
         ))
     }
 
@@ -106,6 +114,8 @@ data class DeckDraft(
         put("overhangMm", overhangMm)
         put("screwSpecification", screwSpecification)
         put("concreteYieldM3PerBag", concreteYieldM3PerBag)
+        put("pileConnection", pileConnection.name)
+        put("pictureFrame", pictureFrame)
     }.toString()
 
     companion object {
@@ -124,7 +134,9 @@ data class DeckDraft(
             orientation = input.orientation,
             overhangMm = numericText(input.overhangMm),
             screwSpecification = input.screwSpecification,
-            concreteYieldM3PerBag = numericText(input.concreteYieldM3PerBag)
+            concreteYieldM3PerBag = numericText(input.concreteYieldM3PerBag),
+            pileConnection = input.pileConnection,
+            pictureFrame = input.pictureFrame
         )
 
         /** Unknown formats fail explicitly; corrupt inputs are never silently recalculated as defaults. */
@@ -132,6 +144,16 @@ data class DeckDraft(
             val data = JSONObject(json)
             require(data.optInt("schemaVersion", 1) == 1) { "This saved task uses an unsupported input format." }
             val defaults = DeckDraft()
+            val connection = if (data.has("pileConnection")) {
+                val value = data.get("pileConnection")
+                require(value is String) { "The saved pile connection is unreadable." }
+                PileConnection.valueOf(value)
+            } else defaults.pileConnection
+            val frame = if (data.has("pictureFrame")) {
+                val value = data.get("pictureFrame")
+                require(value is Boolean) { "The saved picture-frame option is unreadable." }
+                value
+            } else defaults.pictureFrame
             return DeckDraft(
                 widthMm = data.optString("widthMm", defaults.widthMm),
                 lengthMm = data.optString("lengthMm", defaults.lengthMm),
@@ -145,7 +167,9 @@ data class DeckDraft(
                 orientation = FramingOrientation.valueOf(data.optString("orientation", defaults.orientation.name)),
                 overhangMm = data.optString("overhangMm", defaults.overhangMm),
                 screwSpecification = data.optString("screwSpecification", defaults.screwSpecification),
-                concreteYieldM3PerBag = data.optString("concreteYieldM3PerBag", defaults.concreteYieldM3PerBag)
+                concreteYieldM3PerBag = data.optString("concreteYieldM3PerBag", defaults.concreteYieldM3PerBag),
+                pileConnection = connection,
+                pictureFrame = frame
             )
         }
 

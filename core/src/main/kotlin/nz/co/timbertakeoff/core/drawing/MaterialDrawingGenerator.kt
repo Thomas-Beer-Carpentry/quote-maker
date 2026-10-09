@@ -40,7 +40,11 @@ internal object MaterialDrawingGenerator {
                         rows += Row(RowKind.CUT, "${cut.pieces} × ${DrawingGenerator.mm(cut.lengthMm)} mm", "${DrawingGenerator.amount(cut.pieces * cut.lengthMm / 1000.0)} m")
                     }
                 }
-                if (category == MaterialCategory.DECKING) addWrapped(RowKind.NOTE, "${result.geometry.boards.size} boards · actual finished width ${DrawingGenerator.mm(result.input.actualDeckingWidthMm)} mm · starting width ${DrawingGenerator.mm(result.geometry.startingBoardWidthMm)} mm")
+                line.cutNotes.forEach { note -> addWrapped(RowKind.NOTE, note) }
+                if (category == MaterialCategory.DECKING) {
+                    val startingLabel = if (result.input.pictureFrame) "first infill width" else "starting width"
+                    addWrapped(RowKind.NOTE, "${result.geometry.boards.size} boards · actual finished width ${DrawingGenerator.mm(result.input.actualDeckingWidthMm)} mm · $startingLabel ${DrawingGenerator.mm(result.geometry.startingBoardWidthMm)} mm")
+                }
             }
         }
         rows += Row(RowKind.NOTE, "Exact quantities. No waste allowance or stock-length optimisation.")

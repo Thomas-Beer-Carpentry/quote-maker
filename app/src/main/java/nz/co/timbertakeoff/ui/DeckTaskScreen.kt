@@ -14,12 +14,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,11 +34,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +49,7 @@ import nz.co.timbertakeoff.core.CalculationOutcome
 import nz.co.timbertakeoff.core.DeckResult
 import nz.co.timbertakeoff.core.FramingOrientation
 import nz.co.timbertakeoff.core.OrientationAlternative
+import nz.co.timbertakeoff.core.PileConnection
 import nz.co.timbertakeoff.core.Profiles
 import nz.co.timbertakeoff.core.drawing.DrawingGenerator
 import nz.co.timbertakeoff.core.drawing.DrawingSheet
@@ -62,6 +67,11 @@ internal fun orientationLabel(orientation: FramingOrientation): String = when (o
     FramingOrientation.AUTOMATIC -> "Automatic"
     FramingOrientation.LENGTHWAYS -> "Lengthways · bearers parallel to deck length"
     FramingOrientation.WIDTHWAYS -> "Widthways · bearers parallel to deck width"
+}
+
+internal fun pileConnectionLabel(connection: PileConnection): String = when (connection) {
+    PileConnection.CONCRETE_FOOTINGS -> "Post holes with concrete"
+    PileConnection.EXISTING_CONCRETE_BRACKETS -> "Brackets bolted into existing concrete"
 }
 
 @Composable
@@ -201,6 +211,8 @@ private fun OutcomeNotice(outcome: CalculationOutcome?, calculating: Boolean = f
 @Composable
 private fun DeckParameters(task: TaskEntity, draft: DeckDraft, model: EstimatorViewModel) {
     fun edit(change: (DeckDraft) -> DeckDraft) = model.editTask(task, change = change)
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     Text("Deck specifications", style = MaterialTheme.typography.titleLarge)
     Text("All dimensions are millimetres. Width and length are outside framing dimensions; height is ground to the finished decking surface.", style = MaterialTheme.typography.bodySmall)
     Field("1. Deck width (mm)", draft.widthMm, { value -> edit { it.copy(widthMm = value) } }, numeric = true)
@@ -216,12 +228,43 @@ private fun DeckParameters(task: TaskEntity, draft: DeckDraft, model: EstimatorV
     Field("9. Decking species", draft.deckingSpecies, { value -> edit { it.copy(deckingSpecies = value) } })
     Text("Layout and fixing options", style = MaterialTheme.typography.titleLarge)
     Choice("Framing orientation", draft.orientation, FramingOrientation.entries, ::orientationLabel, { value -> edit { it.copy(orientation = value) } })
+    Choice("Pile connection to ground", draft.pileConnection, PileConnection.entries, ::pileConnectionLabel, { value -> edit { it.copy(pileConnection = value) } })
     Field("Decking overhang on all four sides (mm)", draft.overhangMm, { value -> edit { it.copy(overhangMm = value) } }, numeric = true)
+    Row(
+        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).toggleable(
+            value = draft.pictureFrame,
+            role = Role.Switch,
+            onValueChange = { enabled ->
+                focusManager.clearFocus(force = true)
+                keyboard?.hide()
+                edit { it.copy(pictureFrame = enabled) }
+            },
+        ).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text("Picture-frame decking", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+        Switch(checked = draft.pictureFrame, onCheckedChange = null)
+    }
+    if (draft.pictureFrame) {
+        Text("Full-width perimeter boards with mitred corners. Any ripped board is the first infill board next to the picture frame.", style = MaterialTheme.typography.bodySmall)
+        val boardWidth = draft.actualDeckingWidthMm.toDoubleOrNull()
+        val overhang = draft.overhangMm.toDoubleOrNull()
+        if (boardWidth != null && overhang != null && boardWidth.isFinite() && overhang.isFinite() && boardWidth > overhang) {
+            Text("Picture-frame support nog centres: ${number(boardWidth - overhang, 2)} mm from the framing edge beneath the perpendicular perimeter boards.", style = MaterialTheme.typography.bodySmall)
+        }
+    }
     Field("Decking screw specification", draft.screwSpecification, { value -> edit { it.copy(screwSpecification = value) } })
-    Field("Concrete yield per 20 kg bag (m³)", draft.concreteYieldM3PerBag, { value -> edit { it.copy(concreteYieldM3PerBag = value) } }, numeric = true, supporting = "Use the concrete supplier's stated yield. Default 0.01 m³ / bag.")
+    if (draft.pileConnection == PileConnection.CONCRETE_FOOTINGS) {
+        Field("Concrete yield per 20 kg bag (m³)", draft.concreteYieldM3PerBag, { value -> edit { it.copy(concreteYieldM3PerBag = value) } }, numeric = true, supporting = "Use the concrete supplier's stated yield. Default 0.01 m³ / bag.")
+    }
     Text("Task details", style = MaterialTheme.typography.titleLarge)
     Field("Task name", task.name, { value -> model.editTask(task, name = value) })
-    Notice("Flat, level ground assumed. Doubled bearers and boundaries, 125 × 125 mm piles, 500 mm embedment and 400 × 400 × 600 mm holes. These are provisional estimating assumptions.")
+    Notice(if (draft.pileConnection == PileConnection.CONCRETE_FOOTINGS) {
+        "Flat, level ground assumed. Doubled bearers and boundaries, 125 × 125 mm piles, 500 mm embedment and 400 × 400 × 600 mm holes. These are provisional estimating assumptions."
+    } else {
+        "Flat, level concrete assumed. Bracket-mounted 125 × 125 mm posts extend from ground to the underside of the bearers; no embedment or new concrete. One bracket per post; bracket and anchor specifications to be confirmed. These are provisional estimating assumptions."
+    })
 }
 
 @Composable
@@ -289,7 +332,8 @@ private fun DrawingWorkspace(result: DeckResult, job: JobEntity?, client: Client
             Text("${number(result.input.widthMm, 1)} × ${number(result.input.lengthMm, 1)} mm framing · ${number(result.input.heightMm, 1)} mm finished height", style = MaterialTheme.typography.bodyMedium)
             Text("Joists ${number(result.geometry.actualJoistSpacingMm, 2)} mm centres · board gap ${number(result.geometry.deckingGapMm, 2)} mm", style = MaterialTheme.typography.bodySmall)
             if (result.geometry.startingBoardWidthMm < result.input.actualDeckingWidthMm - 0.001) {
-                Text("Ripped starting board: ${number(result.geometry.startingBoardWidthMm, 2)} mm", style = MaterialTheme.typography.bodySmall)
+                val label = if (result.input.pictureFrame) "Ripped first infill board" else "Ripped starting board"
+                Text("$label: ${number(result.geometry.startingBoardWidthMm, 2)} mm", style = MaterialTheme.typography.bodySmall)
             }
             Choice("Print / PDF sheet size", sheetSize, SheetSize.entries, { if (it == SheetSize.A3) "A3 landscape · preferred" else "A4 landscape" }, { sheetSizeName = it.name })
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {

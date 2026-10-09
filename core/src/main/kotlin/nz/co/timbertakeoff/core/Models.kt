@@ -8,6 +8,7 @@ data class TimberProfile(val name: String, val depthMm: Double, val thicknessMm:
 }
 data class DeckingProfile(val nominal: String, val finishedWidthMm: Double, val thicknessMm: Double, val species: String)
 enum class FramingOrientation { AUTOMATIC, LENGTHWAYS, WIDTHWAYS }
+enum class PileConnection { CONCRETE_FOOTINGS, EXISTING_CONCRETE_BRACKETS }
 data class DeckInput(
     val widthMm: Double = 3600.0,
     val lengthMm: Double = 4800.0,
@@ -21,20 +22,25 @@ data class DeckInput(
     val orientation: FramingOrientation = FramingOrientation.AUTOMATIC,
     val overhangMm: Double = 20.0,
     val screwSpecification: String = "10g × 65 mm",
-    val concreteYieldM3PerBag: Double = 0.01
+    val concreteYieldM3PerBag: Double = 0.01,
+    val pileConnection: PileConnection = PileConnection.CONCRETE_FOOTINGS,
+    val pictureFrame: Boolean = false
 )
 object Profiles {
     val framing = listOf(TimberProfile("140 × 45 mm", 140.0, 45.0), TimberProfile("190 × 45 mm",190.0,45.0), TimberProfile("240 × 45 mm",240.0,45.0), TimberProfile("190 × 70 mm",190.0,70.0))
     val decking = listOf(DeckingProfile("90 × 19 mm",90.0,19.0,"H3.2 treated radiata pine"), DeckingProfile("140 × 19 mm",140.0,19.0,"H3.2 treated radiata pine"), DeckingProfile("90 × 21 mm",90.0,21.0,"Kwila"))
 }
 data class Point(val x: Double, val y: Double)
-enum class MemberKind { BEARER, JOIST, BOUNDARY, NOG }
+enum class MemberKind { BEARER, JOIST, BOUNDARY, NOG, PICTURE_FRAME_SUPPORT, PICTURE_FRAME_PACKER }
 data class TimberMember(val id: String, val kind: MemberKind, val start: Point, val end: Point, val thicknessMm: Double, val profile: TimberProfile, val runId: String, val layer: Int = 0) {
     val lengthMm get() = hypot(end.x - start.x, end.y - start.y)
 }
 data class Pile(val id: String, val position: Point, val lengthMm: Double)
 data class MemberJoin(val position: Point, val kind: MemberKind, val runId: String, val layer: Int)
-data class DeckBoard(val index: Int, val origin: Point, val widthMm: Double, val lengthMm: Double, val runsAlongX: Boolean)
+enum class DeckBoardRole { INFILL, PICTURE_FRAME }
+/** Mitred boards carry an exact outline; length is the longitudinal long-point cut. */
+data class DeckBoard(val index: Int, val origin: Point, val widthMm: Double, val lengthMm: Double, val runsAlongX: Boolean,
+    val role: DeckBoardRole = DeckBoardRole.INFILL, val outline: List<Point> = emptyList())
 data class DeckGeometry(
     val orientation: FramingOrientation,
     val bearerRunMm: Double,
@@ -54,14 +60,17 @@ data class DeckGeometry(
     val startingBoardWidthMm: Double,
     val pileAboveGroundMm: Double,
     val excavationM3: Double,
-    val concreteM3: Double
+    val concreteM3: Double,
+    /** u coordinates of the continuous supports beneath perpendicular picture-frame interfaces. */
+    val pictureFrameSupportPositionsMm: List<Double> = emptyList()
 ) {
     /** u follows bearers, v follows joists; map to outside framing x/y coordinates. */
     fun point(u: Double, v: Double): Point = if (orientation == FramingOrientation.WIDTHWAYS) Point(u,v) else Point(v,u)
 }
 enum class MaterialCategory(val title: String) { PILES("Piles"), BEARERS("Bearers"), JOISTS("Joists and boundary joists"), NOGS("Nogs / blocking"), DECKING("Decking"), CONCRETE("Concrete"), FIXINGS("Fixings") }
 data class MaterialKey(val type: String, val specification: String, val unit: String)
-data class MaterialLine(val category: MaterialCategory, val key: MaterialKey, val quantity: Double, val cutLengthsMm: List<Double> = emptyList()) {
+data class MaterialLine(val category: MaterialCategory, val key: MaterialKey, val quantity: Double, val cutLengthsMm: List<Double> = emptyList(),
+    val cutNotes: List<String> = emptyList()) {
     val pieceCount get() = cutLengthsMm.size
 }
 data class OrientationAlternative(val orientation: FramingOrientation, val timberLengthMm: Double?, val pileCount: Int?, val errors: List<String> = emptyList())
@@ -73,7 +82,7 @@ sealed class CalculationOutcome {
 object MaterialConsolidator {
     /** Only identical specifications and units combine; cut lengths remain inspectable. */
     fun consolidate(lines: List<MaterialLine>): List<MaterialLine> = lines.groupBy { it.key }.map { (key, group) ->
-        MaterialLine(group.first().category,key,group.sumOf { it.quantity },group.flatMap { it.cutLengthsMm })
+        MaterialLine(group.first().category,key,group.sumOf { it.quantity },group.flatMap { it.cutLengthsMm },group.flatMap { it.cutNotes })
     }.sortedWith(compareBy({it.category.ordinal},{it.key.specification},{it.key.unit}))
 }
 data class TaskDefinition(val id: String, val title: String, val description: String)

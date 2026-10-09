@@ -1,5 +1,7 @@
 package nz.co.timbertakeoff.core.drawing
 
+import nz.co.timbertakeoff.core.Point
+
 /** Vector primitives expressed in physical sheet millimetres, including text and line widths. */
 enum class SheetSize(val widthMm: Double, val heightMm: Double) { A3(420.0, 297.0), A4(297.0, 210.0) }
 enum class TextAlign { LEFT, CENTER, RIGHT }
@@ -7,6 +9,7 @@ sealed class DrawingElement {
     data class Line(val x1: Double, val y1: Double, val x2: Double, val y2: Double, val weightMm: Double = 0.18, val dashed: Boolean = false) : DrawingElement()
     data class Rect(val x: Double, val y: Double, val width: Double, val height: Double, val weightMm: Double = 0.18, val fill: Boolean = false, val dashed: Boolean = false) : DrawingElement()
     data class Circle(val x: Double, val y: Double, val radiusMm: Double, val weightMm: Double = 0.18, val fill: Boolean = false) : DrawingElement()
+    data class Polygon(val points: List<Point>, val weightMm: Double = 0.18, val fill: Boolean = false) : DrawingElement()
     data class Text(val x: Double, val y: Double, val text: String, val sizeMm: Double = 2.5, val align: TextAlign = TextAlign.LEFT, val rotationDegrees: Double = 0.0, val bold: Boolean = false) : DrawingElement()
 }
 data class DrawingTitle(
@@ -38,6 +41,10 @@ internal class SheetBuilder(val size: SheetSize) {
     }
     fun circle(x: Double, y: Double, radius: Double, weight: Double = 0.18, fill: Boolean = false) {
         elements += DrawingElement.Circle(x, y, radius, weight, fill)
+    }
+    fun polygon(points: List<Point>, weight: Double = 0.18, fill: Boolean = false) {
+        require(points.size >= 3) { "A closed drawing polygon requires at least three vertices." }
+        elements += DrawingElement.Polygon(points, weight, fill)
     }
     /** Draw a wrapped note with a conservative width estimate for ordinary technical text. */
     fun note(x: Double, y: Double, width: Double, value: String, size: Double = 2.5, bold: Boolean = false): Double {

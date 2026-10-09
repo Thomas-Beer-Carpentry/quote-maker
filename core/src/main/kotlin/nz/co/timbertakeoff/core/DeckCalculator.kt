@@ -45,13 +45,24 @@ object DeckCalculator {
             else layouts.first { it.orientation == input.orientation }
         if (selected.geometry == null) return CalculationOutcome.Invalid(selected.errors, alternatives)
         return CalculationOutcome.Success(DeckResult(input, selected.geometry, selected.materials, alternatives, best.orientation,
-            listOf(
+            buildList {
+                addAll(listOf(
                 "Preliminary estimating / set-out information. Structural design and compliance have not been verified.",
                 "Exact quantities; no waste allowance or stock-length optimisation.",
                 "Cantilevers and pile supports are measured to bearer-pair centrelines. Interior joists fit between doubled end boundaries.",
-                "Both physical members of each doubled side boundary receive decking fixings. Parallel end boundaries have no discrete decking crossing.",
                 "Bearer lamination nails include stations at both ends, spaced at no more than 600 mm. Spliced joist ends each receive two nails."
-            )))
+                ))
+                if (input.pictureFrame) {
+                    add("Picture-frame boards are full-width with closed 45° mitres; equal gaps separate the frame and infill. Any rip is the first infill board.")
+                    add("Continuous picture-frame interface supports use the joist profile, with supported splices. Two decking screws per perimeter station, evenly spaced at no more than the selected joist spacing between doubled corner boundaries.")
+                    add("Picture-frame support cuts receive four end nails per piece plus two nails at each bearer intersection; fixing quantities are provisional estimating assumptions.")
+                    selected.geometry.members.filter { it.kind == MemberKind.PICTURE_FRAME_PACKER }.groupBy { it.thicknessMm }.forEach { (width, packers) ->
+                        add("${packers.size} picture-frame blocking packers: rip ${input.joist.name} source timber to ${format(width)} mm wide, then cut ${format(input.joist.thicknessMm)} mm long. Source takeoff includes one exact cut per packer; ripping/stock optimisation and waste are excluded. One fixing set per packer, specification and fasteners per set to be confirmed.")
+                    }
+                } else add("Both physical members of each doubled side boundary receive decking fixings. Parallel end boundaries have no discrete decking crossing.")
+                if (input.pileConnection == PileConnection.EXISTING_CONCRETE_BRACKETS)
+                    add("Bracket-mounted post lengths are ground-to-bearer underside with no embedment. One bracket per post; bracket and anchor specifications remain to be confirmed. Existing concrete suitability is not verified.")
+            }))
     }
 
     /** Independent safety checks are also exposed to tests and future task integrations. */
@@ -65,6 +76,12 @@ object DeckCalculator {
         }
         if (result.materials.filter { it.key.unit == "bags" || it.key.unit == "each" }.any { abs(it.quantity - floor(it.quantity)) > EPS })
             errors += "Physical bag and fixing quantities must be whole counts."
+        if (result.input.pileConnection == PileConnection.EXISTING_CONCRETE_BRACKETS) {
+            if (result.materials.any { it.category == MaterialCategory.CONCRETE }) errors += "Bracket-mounted posts must not include excavation, concrete or concrete bags."
+            val brackets = result.materials.filter { it.key.type == "Post brackets" }
+            if (brackets.size != 1 || abs(brackets.sumOf { it.quantity } - result.geometry.piles.size) > EPS)
+                errors += "Bracket-mounted posts need exactly one bracket per post."
+        }
         return errors.distinct()
     }
 
@@ -92,7 +109,7 @@ object DeckCalculator {
         if (input.maxJoistSpacingMm < input.joist.thicknessMm) add("Maximum joist spacing must be at least the joist thickness.")
         if (input.deckingSpecies.isBlank()) add("Decking species must be specified.")
         if (input.screwSpecification.isBlank()) add("Decking screw specification must be specified.")
-        if (!input.concreteYieldM3PerBag.isFinite() || input.concreteYieldM3PerBag !in 0.000001..1.0)
+        if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS && (!input.concreteYieldM3PerBag.isFinite() || input.concreteYieldM3PerBag !in 0.000001..1.0))
             add("Concrete yield per 20 kg bag must be between 0.000001 and 1 cubic metre.")
     }
 
@@ -123,17 +140,42 @@ object DeckCalculator {
             else evenly(PILE_END, b - PILE_END, ceilSafe(pileSpan / MAX_PILE_SPACING))
         if (pilePositions.zipWithNext().any { (left, right) -> right - left < PILE_SIZE - EPS })
             conflict("The fixed 200 mm bearer end cantilevers leave overlapping 125 mm piles. Increase the bearer run or change orientation.")
-        if (bearerPositions.zipWithNext().any { (left, right) -> right - left < 400.0 - EPS } ||
-            pilePositions.zipWithNext().any { (left, right) -> right - left < 400.0 - EPS })
+        if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS &&
+            (bearerPositions.zipWithNext().any { (left, right) -> right - left < 400.0 - EPS } ||
+            pilePositions.zipWithNext().any { (left, right) -> right - left < 400.0 - EPS }))
             conflict("The 400 × 400 mm footing holes overlap. A combined-footing excavation/concrete detail has not been specified; increase dimensions or change orientation.")
         val pileAboveGround = input.heightMm - input.decking.thicknessMm - input.joist.depthMm - input.bearer.depthMm
         if (pileAboveGround < -EPS) conflict("Finished deck height must be at least the decking, joist and bearer depth combined (${format(input.decking.thicknessMm + input.joist.depthMm + input.bearer.depthMm)} mm).")
+        if (input.pileConnection == PileConnection.EXISTING_CONCRETE_BRACKETS && pileAboveGround <= EPS)
+            conflict("Bracket-mounted posts need a positive ground-to-bearer underside length; increase the finished deck height above the framing stack.")
 
         val sideCentres = listOf(t / 2.0, 1.5 * t, b - 1.5 * t, b - t / 2.0)
         val innerSpan = b - 3.0 * t
         val joistIntervals = ceilSafe(innerSpan / input.maxJoistSpacingMm)
-        val internalJoists = (1 until joistIntervals).map { 1.5 * t + innerSpan * it / joistIntervals }
-        val joistPositions = (sideCentres + internalJoists).sorted()
+        val frameInset = input.actualDeckingWidthMm - input.overhangMm
+        val frameLayout = if (input.pictureFrame) {
+            if (frameInset <= EPS) conflict("Picture-frame inner edges must lie inside the framing; reduce the overhang below the full board width.")
+            pictureFrameBoardLayout(j - 2.0 * frameInset, input.actualDeckingWidthMm)
+        } else null
+        val frameSupportPositions = if (input.pictureFrame) listOf(frameInset, b - frameInset) else emptyList()
+        if (input.pictureFrame && b - 2.0 * frameInset - 2.0 * frameLayout!!.gap <= EPS)
+            conflict("Full-width picture-frame boards and their gaps leave no positive infill run length.")
+        // Reuse a doubled boundary only when it supports both sides of the frame/infill interface.
+        val additionalSupports = frameSupportPositions.filterIndexed { index, cross ->
+            val distance = if (index == 0) cross else b - cross
+            if (distance + frameLayout!!.gap < 2.0 * t - EPS) false
+            else {
+                if (distance - t / 2.0 < 2.0 * t - EPS)
+                    conflict("Picture-frame support at ${format(distance)} mm partially overlaps the doubled side boundary without supporting the full frame/infill interface; change board width, overhang or joist thickness.")
+                true
+            }
+        }
+        val internalJoists = if (!input.pictureFrame) (1 until joistIntervals).map { 1.5 * t + innerSpan * it / joistIntervals }
+            else (listOf(1.5 * t, b - 1.5 * t) + additionalSupports).sorted().zipWithNext().flatMap { (a, z) ->
+                val intervals = ceilSafe((z - a) / input.maxJoistSpacingMm)
+                (1 until intervals).map { a + (z - a) * it / intervals }
+            }
+        val joistPositions = (sideCentres + internalJoists + additionalSupports).sorted()
         if (joistPositions.zipWithNext().any { (left, right) -> right - left < t - EPS })
             conflict("Evenly spaced joists overlap with the selected thickness and maximum spacing. Increase the maximum joist spacing.")
         val actualJoistSpacing = joistPositions.zipWithNext().maxOf { (a, z) -> z - a }
@@ -156,13 +198,17 @@ object DeckCalculator {
             val runId = "B${line + 1}"
             val firstJoins = addRun(MemberKind.BEARER, runId, 0, 0.0, b, v - input.bearer.thicknessMm / 2.0, true, input.bearer, pilePositions)
             addRun(MemberKind.BEARER, runId, 1, 0.0, b, v + input.bearer.thicknessMm / 2.0, true, input.bearer, pilePositions, firstJoins)
-            pilePositions.forEachIndexed { index, u -> piles += Pile("P${line + 1}.${index + 1}", point(u, v), max(0.0, pileAboveGround) + PILE_EMBEDMENT) }
+            val embedment = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) PILE_EMBEDMENT else 0.0
+            pilePositions.forEachIndexed { index, u -> piles += Pile("P${line + 1}.${index + 1}", point(u, v), max(0.0, pileAboveGround) + embedment) }
         }
         sideCentres.forEachIndexed { index, u ->
             addRun(MemberKind.BOUNDARY, "BJ${index + 1}", index % 2, 0.0, j, u, false, input.joist, bearerPositions)
         }
         internalJoists.forEachIndexed { index, u ->
             addRun(MemberKind.JOIST, "J${index + 1}", 0, 2.0 * t, j - 2.0 * t, u, false, input.joist, bearerPositions)
+        }
+        additionalSupports.forEachIndexed { index, u ->
+            addRun(MemberKind.PICTURE_FRAME_SUPPORT, "PF${index + 1}", 0, 2.0 * t, j - 2.0 * t, u, false, input.joist, bearerPositions)
         }
         listOf(t / 2.0, 1.5 * t, j - 1.5 * t, j - t / 2.0).forEachIndexed { index, v ->
             addRun(MemberKind.BOUNDARY, "BE${index + 1}", index % 2, 2.0 * t, b - 2.0 * t, v, true, input.joist, emptyList())
@@ -175,25 +221,48 @@ object DeckCalculator {
             val cut = right - left - t
             if (cut > EPS) blockingRows.forEachIndexed { row, baseV ->
                 val v = baseV + if (bay % 2 == 0) -t / 2.0 else t / 2.0
-                members += TimberMember("N${row + 1}.${bay + 1}", MemberKind.NOG, point(left + t / 2.0, v),
-                    point(right - t / 2.0, v), t, input.joist, "N${row + 1}.${bay + 1}")
+                val packer = input.pictureFrame && cut < t - EPS &&
+                    additionalSupports.any { abs(it - left) < EPS || abs(it - right) < EPS }
+                if (packer) {
+                    val run = "PK${row + 1}.${bay + 1}"
+                    val profile = TimberProfile("Ripped packer · ${format(input.joist.depthMm)} × ${format(cut)} mm", input.joist.depthMm, cut, input.joist.species)
+                    members += TimberMember(run, MemberKind.PICTURE_FRAME_PACKER, point((left + right) / 2.0, v - t / 2.0),
+                        point((left + right) / 2.0, v + t / 2.0), cut, profile, run)
+                } else members += TimberMember("N${row + 1}.${bay + 1}", MemberKind.NOG, point(left + t / 2.0, v),
+                        point(right - t / 2.0, v), t, input.joist, "N${row + 1}.${bay + 1}")
             }
         }
-        val boardLayout = boardLayout(j + 2.0 * input.overhangMm, input.actualDeckingWidthMm)
+        val boardLayout = frameLayout ?: boardLayout(j + 2.0 * input.overhangMm, input.actualDeckingWidthMm)
         val boards = mutableListOf<DeckBoard>()
-        var v = -input.overhangMm
+        if (input.pictureFrame) {
+            val o = input.overhangMm
+            val d = frameInset
+            val width = input.actualDeckingWidthMm
+            fun frame(originU: Double, originV: Double, length: Double, alongU: Boolean, outline: List<Point>) {
+                boards += DeckBoard(boards.size, point(originU, originV), width, length,
+                    if (alongU) orientation == FramingOrientation.WIDTHWAYS else orientation == FramingOrientation.LENGTHWAYS,
+                    DeckBoardRole.PICTURE_FRAME, outline)
+            }
+            frame(-o, -o, b + 2.0 * o, true, listOf(point(-o, -o), point(b + o, -o), point(b - d, d), point(d, d)))
+            frame(-o, j - d, b + 2.0 * o, true, listOf(point(-o, j + o), point(d, j - d), point(b - d, j - d), point(b + o, j + o)))
+            frame(-o, -o, j + 2.0 * o, false, listOf(point(-o, -o), point(d, d), point(d, j - d), point(-o, j + o)))
+            frame(b - d, -o, j + 2.0 * o, false, listOf(point(b + o, -o), point(b + o, j + o), point(b - d, j - d), point(b - d, d)))
+        }
+        var v = if (input.pictureFrame) frameInset + boardLayout.gap else -input.overhangMm
         repeat(boardLayout.count) { index ->
             val width = if (index == 0) boardLayout.startWidth else input.actualDeckingWidthMm
-            boards += DeckBoard(index, point(-input.overhangMm, v), width, b + 2.0 * input.overhangMm,
+            val start = if (input.pictureFrame) frameInset + boardLayout.gap else -input.overhangMm
+            val length = if (input.pictureFrame) b - 2.0 * frameInset - 2.0 * boardLayout.gap else b + 2.0 * input.overhangMm
+            boards += DeckBoard(boards.size, point(start, v), width, length,
                 orientation == FramingOrientation.WIDTHWAYS)
             v += width + boardLayout.gap
         }
         // Exact decimal volumes avoid a phantom extra bag at an exact whole-bag boundary.
-        val excavation = BigDecimal("0.096").multiply(BigDecimal.valueOf(piles.size.toLong())).toDouble()
-        val concrete = BigDecimal("0.0881875").multiply(BigDecimal.valueOf(piles.size.toLong())).toDouble()
+        val excavation = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) BigDecimal("0.096").multiply(BigDecimal.valueOf(piles.size.toLong())).toDouble() else 0.0
+        val concrete = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) BigDecimal("0.0881875").multiply(BigDecimal.valueOf(piles.size.toLong())).toDouble() else 0.0
         return DeckGeometry(orientation, b, j, bearerPositions, pilePositions, joistPositions, blockingRows,
             members, piles, joins, boards, actualJoistSpacing, actualBearerSpacing, cantilever,
-            boardLayout.gap, boardLayout.startWidth, max(0.0, pileAboveGround), excavation, concrete)
+            boardLayout.gap, boardLayout.startWidth, max(0.0, pileAboveGround), excavation, concrete, frameSupportPositions)
     }
 
     /** Minimum pieces, then minimum squared cut lengths for a balanced supported cutting schedule. */
@@ -250,39 +319,90 @@ object DeckCalculator {
             ?: conflict("Finished decking width ${format(finished)} mm cannot be covered with ${format(width)} mm boards, equal 4–6 mm gaps and a starting board at least 60 mm wide.")
     }
 
+    /** Infill has one equal gap on each frame edge, so n boards require n + 1 gaps. */
+    private fun pictureFrameBoardLayout(clear: Double, width: Double): BoardLayout {
+        if (clear < 68.0 - EPS) conflict("Full-width picture-frame boards leave too little space for a 60 mm infill board and two 4–6 mm gaps.")
+        val maxCount = floor(clear / (width + 4.0)).toInt() + 2
+        val full = (1..maxCount).mapNotNull { count ->
+            val gap = (clear - count * width) / (count + 1)
+            if (gap in (4.0 - EPS)..(6.0 + EPS)) BoardLayout(count, gap.coerceIn(4.0, 6.0), width) else null
+        }
+        if (full.isNotEmpty()) return full.minWith(compareBy({ abs(it.gap - 5.0) }, { it.count }))
+        val ripped = (1..maxCount).mapNotNull { count ->
+            val lower = max(4.0, (clear - count * width) / (count + 1))
+            val upper = min(6.0, (clear - 60.0 - (count - 1) * width) / (count + 1))
+            if (lower > upper + EPS) null else {
+                val gap = 5.0.coerceIn(lower, max(lower, upper))
+                val rip = clear - (count - 1) * width - (count + 1) * gap
+                if (rip in (60.0 - EPS)..(width + EPS)) BoardLayout(count, gap, rip.coerceIn(60.0, width)) else null
+            }
+        }
+        return ripped.minWithOrNull(compareBy({ abs(it.gap - 5.0) }, { -it.startWidth }, { it.count }))
+            ?: conflict("Picture-frame infill width ${format(clear)} mm cannot be covered with ${format(width)} mm boards, equal 4–6 mm gaps including both frame edges, and a first infill board at least 60 mm wide.")
+    }
+
     private fun takeoff(input: DeckInput, g: DeckGeometry): List<MaterialLine> {
         val lines = mutableListOf<MaterialLine>()
-        fun timber(category: MaterialCategory, type: String, spec: String, cuts: List<Double>) {
-            if (cuts.isNotEmpty()) lines += MaterialLine(category, MaterialKey(type, spec, "lm"), cuts.sum() / 1000.0, cuts)
+        fun timber(category: MaterialCategory, type: String, spec: String, cuts: List<Double>, notes: List<String> = emptyList()) {
+            if (cuts.isNotEmpty()) lines += MaterialLine(category, MaterialKey(type, spec, "lm"), cuts.sum() / 1000.0, cuts, notes)
         }
         timber(MaterialCategory.PILES, "Timber", "125 × 125 mm timber piles · treatment unspecified", g.piles.map { it.lengthMm })
         timber(MaterialCategory.BEARERS, "Timber", materialSpecification(input.bearer), g.members.filter { it.kind == MemberKind.BEARER }.map { it.lengthMm })
         timber(MaterialCategory.JOISTS, "Timber", materialSpecification(input.joist), g.members.filter { it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY }.map { it.lengthMm })
-        timber(MaterialCategory.NOGS, "Timber", materialSpecification(input.joist), g.members.filter { it.kind == MemberKind.NOG }.map { it.lengthMm })
-        timber(MaterialCategory.DECKING, "Decking", "${input.decking.nominal} · finished ${format(input.actualDeckingWidthMm)} mm × ${format(input.decking.thicknessMm)} mm · ${input.deckingSpecies}", g.boards.map { it.lengthMm })
-        lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Excavation", "400 × 400 × 600 mm footing holes", "m³"), g.excavationM3)
-        lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Concrete", "Net fill after pile displacement", "m³"), g.concreteM3)
-        val bags = BigDecimal.valueOf(g.concreteM3).divide(BigDecimal.valueOf(input.concreteYieldM3PerBag), 0, RoundingMode.CEILING).toDouble()
-        lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Concrete bags", "20 kg · yield ${format(input.concreteYieldM3PerBag)} m³/bag", "bags"), bags)
+        val nogs = g.members.filter { it.kind == MemberKind.NOG }
+        val frameSupports = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }
+        val packers = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_PACKER }
+        val blockingNotes = if (input.pictureFrame) buildList {
+            if (nogs.isNotEmpty()) add("Ordinary nogs: ${cutSchedule(nogs.map { it.lengthMm })}.")
+            if (frameSupports.isNotEmpty()) add("Continuous picture-frame supports: ${cutSchedule(frameSupports.map { it.lengthMm })}; ${input.joist.name}.")
+            packers.groupBy { it.thicknessMm }.forEach { (rip, members) ->
+                add("Ripped packers: ${members.size} × ${format(input.joist.thicknessMm)} mm source cuts from ${input.joist.name}; finished ${format(input.joist.depthMm)} × ${format(rip)} mm. Fixings to be confirmed.")
+            }
+        } else emptyList()
+        timber(MaterialCategory.NOGS, "Timber", materialSpecification(input.joist), (nogs + frameSupports + packers).map { it.lengthMm }, blockingNotes)
+        val deckingNotes = if (input.pictureFrame) listOf(
+            "Picture frame: ${cutSchedule(g.boards.filter { it.role == DeckBoardRole.PICTURE_FRAME }.map { it.lengthMm })} long-point cuts; four full-width ${format(input.actualDeckingWidthMm)} mm boards with 45° mitres.",
+            "Infill: ${cutSchedule(g.boards.filter { it.role == DeckBoardRole.INFILL }.map { it.lengthMm })}; first board ${format(g.startingBoardWidthMm)} mm wide; equal ${format(g.deckingGapMm)} mm gaps including frame edges."
+        ) else emptyList()
+        timber(MaterialCategory.DECKING, "Decking", "${input.decking.nominal} · finished ${format(input.actualDeckingWidthMm)} mm × ${format(input.decking.thicknessMm)} mm · ${input.deckingSpecies}", g.boards.map { it.lengthMm }, deckingNotes)
+        if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) {
+            lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Excavation", "400 × 400 × 600 mm footing holes", "m³"), g.excavationM3)
+            lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Concrete", "Net fill after pile displacement", "m³"), g.concreteM3)
+            val bags = BigDecimal.valueOf(g.concreteM3).divide(BigDecimal.valueOf(input.concreteYieldM3PerBag), 0, RoundingMode.CEILING).toDouble()
+            lines += MaterialLine(MaterialCategory.CONCRETE, MaterialKey("Concrete bags", "20 kg · yield ${format(input.concreteYieldM3PerBag)} m³/bag", "bags"), bags)
+        } else lines += MaterialLine(MaterialCategory.FIXINGS,
+            MaterialKey("Post brackets", "125 × 125 mm posts · bracket and anchors specification to be confirmed", "each"), g.piles.size.toDouble())
         val bearerPileNails = 4 * g.piles.size
         val laminationNails = 4 * (ceilSafe(g.bearerRunMm / 600.0) + 1) * g.bearerPositionsMm.size
-        val perpendicularJoists = g.members.filter { (it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY) && abs(u(g, it.start) - u(g, it.end)) < EPS }
+        val perpendicularJoists = g.members.filter { (it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY || it.kind == MemberKind.PICTURE_FRAME_SUPPORT) && abs(u(g, it.start) - u(g, it.end)) < EPS }
         val joistNails = 2 * perpendicularJoists.sumOf { member ->
             g.bearerPositionsMm.count { it >= min(v(g, member.start), v(g, member.end)) - EPS && it <= max(v(g, member.start), v(g, member.end)) + EPS }
         }
-        val nogNails = 4 * g.members.count { it.kind == MemberKind.NOG }
+        val nogNails = 4 * g.members.count { it.kind == MemberKind.NOG || it.kind == MemberKind.PICTURE_FRAME_SUPPORT }
         lines += MaterialLine(MaterialCategory.FIXINGS, MaterialKey("Nails", "90 mm Paslode", "each"), (bearerPileNails + laminationNails + joistNails + nogNails).toDouble())
+        val packerCount = g.members.count { it.kind == MemberKind.PICTURE_FRAME_PACKER }
+        if (packerCount > 0) lines += MaterialLine(MaterialCategory.FIXINGS,
+            MaterialKey("Packer fixing sets", "Specification and fasteners per set to be confirmed", "each"), packerCount.toDouble())
         // Count each continuous perpendicular joist once, even if that run has a supported splice.
         val joistRuns = perpendicularJoists.groupBy { it.runId }.values
-        val screws = 2 * g.boards.sumOf { board ->
+        val infillScrews = 2 * g.boards.filter { it.role == DeckBoardRole.INFILL }.sumOf { board ->
             val boardStart = v(g, board.origin)
             val boardEnd = boardStart + board.widthMm
             joistRuns.count { pieces ->
                 val low = pieces.minOf { min(v(g, it.start), v(g, it.end)) }
                 val high = pieces.maxOf { max(v(g, it.start), v(g, it.end)) }
-                min(boardEnd, high) - max(boardStart, low) > EPS
+                val cross = u(g, pieces.first().start)
+                val footprintOverlap = !input.pictureFrame || min(u(g, board.origin) + board.lengthMm, cross + input.joist.thicknessMm / 2.0) -
+                    max(u(g, board.origin), cross - input.joist.thicknessMm / 2.0) > EPS
+                footprintOverlap && min(boardEnd, high) - max(boardStart, low) > EPS
             }
         }
+        val frameScrews = if (input.pictureFrame) {
+            // Ends lie on continuous supported timber, inside the doubled corner boundaries.
+            4 * (ceilSafe((g.bearerRunMm - 4.0 * input.joist.thicknessMm) / input.maxJoistSpacingMm) + 1) +
+                4 * (ceilSafe((g.joistRunMm - 4.0 * input.joist.thicknessMm) / input.maxJoistSpacingMm) + 1)
+        } else 0
+        val screws = infillScrews + frameScrews
         lines += MaterialLine(MaterialCategory.FIXINGS, MaterialKey("Decking screws", input.screwSpecification, "each"), screws.toDouble())
         return lines
     }
@@ -292,12 +412,13 @@ object DeckCalculator {
         if (g.orientation == FramingOrientation.AUTOMATIC) add("Calculated orientation must be explicit.")
         if (g.members.any { !it.lengthMm.isFinite() || it.lengthMm <= EPS }) add("Every timber member must have a positive finite cut length.")
         if (g.members.any { abs(it.start.x - it.end.x) > EPS && abs(it.start.y - it.end.y) > EPS }) add("Framing members must follow the calculated orthogonal axes.")
-        if (g.members.filter { it.kind != MemberKind.NOG }.any { it.lengthMm > MAX_MEMBER + EPS }) add("A bearer or joist cut exceeds 6000 mm.")
+        if (g.members.filter { it.kind != MemberKind.NOG && it.kind != MemberKind.PICTURE_FRAME_PACKER }.any { it.lengthMm > MAX_MEMBER + EPS }) add("A bearer or joist cut exceeds 6000 mm.")
         if (g.bearerPositionsMm.zipWithNext().any { (a, z) -> z - a > MAX_BEARER_SPACING + EPS }) add("Bearer spacing exceeds 1800 mm.")
         if (g.bearerPositionsMm.zipWithNext().any { (a, z) -> z - a < max(PILE_SIZE, 2.0 * input.bearer.thicknessMm) - EPS }) add("Bearer pairs or their piles physically overlap.")
         if (g.pilePositionsMm.zipWithNext().any { (a, z) -> z - a > MAX_PILE_SPACING + EPS }) add("Pile spacing exceeds 1300 mm.")
         if (g.pilePositionsMm.zipWithNext().any { (a, z) -> z - a < PILE_SIZE - EPS }) add("Pile bodies physically overlap.")
-        if (g.pilePositionsMm.zipWithNext().any { (a, z) -> z - a < 400.0 - EPS } || g.bearerPositionsMm.zipWithNext().any { (a, z) -> z - a < 400.0 - EPS })
+        if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS &&
+            (g.pilePositionsMm.zipWithNext().any { (a, z) -> z - a < 400.0 - EPS } || g.bearerPositionsMm.zipWithNext().any { (a, z) -> z - a < 400.0 - EPS }))
             add("Footing holes overlap without a specified combined-footing detail.")
         if (g.pilePositionsMm.isEmpty() || abs(g.pilePositionsMm.first() - 200.0) > EPS || abs(g.bearerRunMm - g.pilePositionsMm.last() - 200.0) > EPS)
             add("Bearer end cantilevers must be 200 mm.")
@@ -308,6 +429,7 @@ object DeckCalculator {
                 add("Outside and interior joist cantilevers must each be 90–300 mm.")
         } else add("At least one bearer line is required.")
         g.joins.forEach { join ->
+            if (join.kind == MemberKind.NOG || join.kind == MemberKind.PICTURE_FRAME_PACKER) add("Blocking and ripped packers cannot contain framing splice records.")
             if (join.kind == MemberKind.BEARER) {
                 val support = g.piles.any { abs(u(g, join.position) - u(g, it.position)) < EPS && abs(v(g, join.position) - v(g, it.position)) <= input.bearer.thicknessMm / 2.0 + EPS }
                 if (!support) add("Bearer splice ${join.runId} is not supported by a pile.")
@@ -316,7 +438,7 @@ object DeckCalculator {
             } else if (g.bearerPositionsMm.none { abs(v(g, join.position) - it) < EPS }) add("Joist splice ${join.runId} is not supported by a bearer.")
         }
         // Check physical cuts as well as the join records so a missing record cannot hide an unsupported splice.
-        val timberRuns = g.members.filter { it.kind != MemberKind.NOG }.groupBy { Pair(it.runId, it.layer) }
+        val timberRuns = g.members.filter { it.kind != MemberKind.NOG && it.kind != MemberKind.PICTURE_FRAME_PACKER }.groupBy { Pair(it.runId, it.layer) }
         timberRuns.values.forEach { pieces ->
             val alongU = abs(v(g, pieces.first().start) - v(g, pieces.first().end)) < EPS
             val sorted = pieces.sortedBy { if (alongU) u(g, it.start) else v(g, it.start) }
@@ -332,16 +454,22 @@ object DeckCalculator {
             }
         }
         if (g.piles.size != g.bearerPositionsMm.size * g.pilePositionsMm.size) add("Every calculated bearer/pile intersection must contain one pile.")
-        if (g.piles.any { it.lengthMm < PILE_EMBEDMENT - EPS || !it.lengthMm.isFinite() }) add("Pile length cannot be less than its 500 mm embedment.")
-        val expectedPileLength = input.heightMm - input.decking.thicknessMm - input.joist.depthMm - input.bearer.depthMm + PILE_EMBEDMENT
+        val embedment = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) PILE_EMBEDMENT else 0.0
+        if (g.piles.any { it.lengthMm <= EPS || it.lengthMm < embedment - EPS || !it.lengthMm.isFinite() })
+            add("Post lengths must be positive and include the selected connection's embedment.")
+        val expectedPileLength = input.heightMm - input.decking.thicknessMm - input.joist.depthMm - input.bearer.depthMm + embedment
         if (g.piles.any { abs(it.lengthMm - expectedPileLength) > EPS }) add("Pile lengths do not reconcile to finished deck height.")
-        val nogBays = g.members.filter { it.kind == MemberKind.NOG }.groupBy { u(g, it.start) }
-        nogBays.values.forEach { nogs ->
-            val restraints = (listOf(1.5 * t, g.joistRunMm - 1.5 * t) + nogs.map { v(g, it.start) }).sorted()
-            if (restraints.zipWithNext().any { (a, z) -> z - a > MAX_BLOCKING_SPACING + EPS }) add("Blocking row spacing exceeds 1800 mm.")
-            if (nogs.any { v(g, it.start) - t / 2.0 < 2.0 * t - EPS || v(g, it.start) + t / 2.0 > g.joistRunMm - 2.0 * t + EPS }) add("Blocking overlaps the doubled end boundaries.")
+        val nogBays = g.members.filter { it.kind == MemberKind.NOG || it.kind == MemberKind.PICTURE_FRAME_PACKER }.groupBy {
+            if (it.kind == MemberKind.PICTURE_FRAME_PACKER) u(g, it.start) - it.thicknessMm / 2.0 else u(g, it.start)
         }
-        if (g.boards.isEmpty()) add("A valid decking board layout is required.") else {
+        fun rowCentre(member: TimberMember) = if (member.kind == MemberKind.PICTURE_FRAME_PACKER) (v(g, member.start) + v(g, member.end)) / 2.0 else v(g, member.start)
+        nogBays.values.forEach { nogs ->
+            val restraints = (listOf(1.5 * t, g.joistRunMm - 1.5 * t) + nogs.map { rowCentre(it) }).sorted()
+            if (restraints.zipWithNext().any { (a, z) -> z - a > MAX_BLOCKING_SPACING + EPS }) add("Blocking row spacing exceeds 1800 mm.")
+            if (nogs.any { rowCentre(it) - t / 2.0 < 2.0 * t - EPS || rowCentre(it) + t / 2.0 > g.joistRunMm - 2.0 * t + EPS }) add("Blocking overlaps the doubled end boundaries.")
+        }
+        if (input.pictureFrame) addAll(pictureFrameErrors(input, g))
+        else if (g.boards.isEmpty()) add("A valid decking board layout is required.") else {
             if (abs(u(g, g.boards.first().origin) + input.overhangMm) > EPS || abs(v(g, g.boards.first().origin) + input.overhangMm) > EPS)
                 add("Decking must begin at the selected overhang outside the framing.")
             if (g.boards.any { abs(it.lengthMm - g.bearerRunMm - 2.0 * input.overhangMm) > EPS || abs(u(g, it.origin) + input.overhangMm) > EPS || it.runsAlongX != (g.orientation == FramingOrientation.WIDTHWAYS) })
@@ -354,10 +482,118 @@ object DeckCalculator {
             val covered = g.boards.sumOf { it.widthMm } + (g.boards.size - 1) * g.deckingGapMm
             if (abs(covered - g.joistRunMm - 2.0 * input.overhangMm) > EPS) add("Decking does not cover the finished dimensions exactly.")
             if (g.boards.zipWithNext().any { (a, z) -> abs(v(g, z.origin) - v(g, a.origin) - a.widthMm - g.deckingGapMm) > EPS }) add("Decking gaps are not equal.")
+            if (g.boards.any { it.role != DeckBoardRole.INFILL || it.outline.isNotEmpty() } || g.pictureFrameSupportPositionsMm.isNotEmpty() || g.members.any { it.kind == MemberKind.PICTURE_FRAME_SUPPORT || it.kind == MemberKind.PICTURE_FRAME_PACKER })
+                add("Unframed decking cannot contain picture-frame boards or supports.")
         }
-        if (abs(g.excavationM3 - g.piles.size * 0.096) > EPS || abs(g.concreteM3 - g.piles.size * (0.096 - 0.0078125)) > EPS)
+        val expectedExcavation = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) g.piles.size * 0.096 else 0.0
+        val expectedConcrete = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) g.piles.size * (0.096 - 0.0078125) else 0.0
+        if (abs(g.excavationM3 - expectedExcavation) > EPS || abs(g.concreteM3 - expectedConcrete) > EPS)
             add("Footing volumes must subtract only the embedded pile displacement.")
     }.distinct()
+
+    private fun pictureFrameErrors(input: DeckInput, g: DeckGeometry): List<String> = buildList {
+        val b = g.bearerRunMm
+        val j = g.joistRunMm
+        val o = input.overhangMm
+        val w = input.actualDeckingWidthMm
+        val d = w - o
+        val gap = g.deckingGapMm
+        val t = input.joist.thicknessMm
+        val frame = g.boards.filter { it.role == DeckBoardRole.PICTURE_FRAME }
+        val infill = g.boards.filter { it.role == DeckBoardRole.INFILL }
+        if (g.boards.any { !it.widthMm.isFinite() || !it.lengthMm.isFinite() || it.widthMm <= EPS || it.lengthMm <= EPS })
+            add("Every decking board needs positive finite dimensions.")
+        if (frame.size != 4 || frame.any { abs(it.widthMm - w) > EPS })
+            add("Picture frames require four full-width perimeter boards.")
+        val expectedOutlines = listOf(
+            listOf(g.point(-o, -o), g.point(b + o, -o), g.point(b - d, d), g.point(d, d)),
+            listOf(g.point(-o, j + o), g.point(d, j - d), g.point(b - d, j - d), g.point(b + o, j + o)),
+            listOf(g.point(-o, -o), g.point(d, d), g.point(d, j - d), g.point(-o, j + o)),
+            listOf(g.point(b + o, -o), g.point(b + o, j + o), g.point(b - d, j - d), g.point(b - d, d))
+        )
+        val expectedOrigins = listOf(g.point(-o, -o), g.point(-o, j - d), g.point(-o, -o), g.point(b - d, -o))
+        frame.forEachIndexed { index, board ->
+            if (index < 4) {
+                val expectedLength = if (index < 2) b + 2.0 * o else j + 2.0 * o
+                val expectedDirection = if (index < 2) g.orientation == FramingOrientation.WIDTHWAYS else g.orientation == FramingOrientation.LENGTHWAYS
+                if (abs(board.lengthMm - expectedLength) > EPS || board.runsAlongX != expectedDirection || !samePoint(board.origin, expectedOrigins[index]) ||
+                    board.outline.size != 4 || board.outline.zip(expectedOutlines[index]).any { (a, z) -> !samePoint(a, z) })
+                    add("Picture-frame boards must have closed 45° mitres and match the finished perimeter exactly.")
+            }
+        }
+        if (infill.isEmpty()) add("Picture frames need a valid infill board layout.") else {
+            if (gap < 4.0 - EPS || gap > 6.0 + EPS) add("Picture-frame and infill gaps must be equal and between 4–6 mm.")
+            if (abs(infill.first().widthMm - g.startingBoardWidthMm) > EPS || infill.first().widthMm < 60.0 - EPS || infill.first().widthMm > w + EPS)
+                add("The first infill board must match the calculated rip and be 60 mm to full width.")
+            if (infill.drop(1).any { abs(it.widthMm - w) > EPS }) add("Only the first infill board after the picture frame may be ripped.")
+            if (abs(v(g, infill.first().origin) - d - gap) > EPS || abs(v(g, infill.last().origin) + infill.last().widthMm + gap - (j - d)) > EPS)
+                add("Equal gaps must separate the first and last infill boards from the picture frame.")
+            if (infill.any { abs(u(g, it.origin) - d - gap) > EPS || abs(it.lengthMm - (b - 2.0 * d - 2.0 * gap)) > EPS ||
+                    it.runsAlongX != (g.orientation == FramingOrientation.WIDTHWAYS) || it.outline.isNotEmpty() })
+                add("Infill runs must stop one equal gap inside both perpendicular picture-frame boards.")
+            if (infill.zipWithNext().any { (a, z) -> abs(v(g, z.origin) - v(g, a.origin) - a.widthMm - gap) > EPS })
+                add("Picture-frame infill gaps are not equal.")
+            val covered = 2.0 * w + infill.sumOf { it.widthMm } + (infill.size + 1) * gap
+            if (abs(covered - j - 2.0 * o) > EPS) add("Picture-frame and infill boards do not cover the finished width exactly.")
+        }
+        val expectedSupports = listOf(d, b - d)
+        if (g.pictureFrameSupportPositionsMm.size != 2 || g.pictureFrameSupportPositionsMm.zip(expectedSupports).any { (a, z) -> abs(a - z) > EPS })
+            add("Picture-frame interface support positions must equal board width less overhang on both ends.")
+        expectedSupports.forEachIndexed { index, cross ->
+            val distance = if (index == 0) cross else b - cross
+            if (distance + gap < 2.0 * t - EPS) {
+                if (distance <= EPS) add("The picture-frame interface is outside the existing doubled boundary support.")
+            } else {
+                val support = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_SUPPORT && abs(u(g, it.start) - cross) < EPS }
+                if (distance - t / 2.0 < 2.0 * t - EPS || support.isEmpty() ||
+                    abs(support.minOfOrNull { min(v(g, it.start), v(g, it.end)) }?.minus(2.0 * t) ?: 1.0) > EPS ||
+                    abs(support.maxOfOrNull { max(v(g, it.start), v(g, it.end)) }?.minus(j - 2.0 * t) ?: 1.0) > EPS)
+                    add("Each perpendicular picture-frame interface needs continuous support between doubled end boundaries without overlapping timber.")
+            }
+        }
+        if (g.members.filter { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }.any { member -> expectedSupports.none { abs(u(g, member.start) - it) < EPS } })
+            add("Unexpected picture-frame support position.")
+        val actualCentres = g.members.filter { (it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY || it.kind == MemberKind.PICTURE_FRAME_SUPPORT) && abs(u(g, it.start) - u(g, it.end)) < EPS }
+            .map { u(g, it.start) }.distinct().sorted()
+        if (actualCentres.size != g.joistPositionsMm.size || actualCentres.zip(g.joistPositionsMm).any { (a, z) -> abs(a - z) > EPS })
+            add("Joist positions must include the actual continuous picture-frame supports.")
+        // Verify every clear bay and every row, including bays occupied by ripped packers.
+        val restraintSpan = j - 3.0 * t
+        val intervals = max(2, ceilSafe(restraintSpan / (MAX_BLOCKING_SPACING - t / 2.0)))
+        val expectedRows = (1 until intervals).map { 1.5 * t + restraintSpan * it / intervals }
+        if (g.blockingRowsMm.size != expectedRows.size || g.blockingRowsMm.zip(expectedRows).any { (a, z) -> abs(a - z) > EPS })
+            add("Picture-frame blocking rows must be evenly distributed within the 1800 mm maximum.")
+        val supportCentres = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }.map { u(g, it.start) }.distinct()
+        val blocking = g.members.filter { it.kind == MemberKind.NOG || it.kind == MemberKind.PICTURE_FRAME_PACKER }
+        val expectedBlockingIds = mutableSetOf<String>()
+        actualCentres.zipWithNext().forEachIndexed { bay, (left, right) ->
+            val clear = right - left - t
+            if (clear > EPS) expectedRows.forEach { base ->
+                val centreV = base + if (bay % 2 == 0) -t / 2.0 else t / 2.0
+                val centreU = (left + right) / 2.0
+                val mustRip = clear < t - EPS && supportCentres.any { abs(it - left) < EPS || abs(it - right) < EPS }
+                val matching = blocking.filter { member ->
+                    abs((u(g, member.start) + u(g, member.end)) / 2.0 - centreU) < EPS &&
+                        abs((v(g, member.start) + v(g, member.end)) / 2.0 - centreV) < EPS
+                }
+                matching.forEach { expectedBlockingIds += it.id }
+                if (matching.size != 1) add("Every clear joist bay needs one nog or ripped packer at each staggered blocking row.")
+                matching.singleOrNull()?.let { member ->
+                    if (mustRip) {
+                        if (member.kind != MemberKind.PICTURE_FRAME_PACKER || abs(member.lengthMm - t) > EPS || abs(member.thicknessMm - clear) > EPS ||
+                            abs(member.profile.thicknessMm - clear) > EPS || abs(member.profile.depthMm - input.joist.depthMm) > EPS ||
+                            member.profile.species != input.joist.species || abs(u(g, member.start) - u(g, member.end)) > EPS)
+                            add("Narrow picture-frame bays need ripped packers matching the clear strip width and the joist thickness as cut length.")
+                    } else if (member.kind != MemberKind.NOG || abs(member.lengthMm - clear) > EPS || abs(member.thicknessMm - t) > EPS ||
+                        member.profile != input.joist || abs(v(g, member.start) - v(g, member.end)) > EPS)
+                        add("Blocking cuts must match their clear joist bays and selected joist profile.")
+                }
+            }
+        }
+        if (blocking.any { it.id !in expectedBlockingIds }) add("Blocking or packers occur outside the calculated staggered rows.")
+    }
+
+    private fun samePoint(a: Point, b: Point) = abs(a.x - b.x) < EPS && abs(a.y - b.y) < EPS
 
     private fun u(g: DeckGeometry, p: Point) = if (g.orientation == FramingOrientation.WIDTHWAYS) p.x else p.y
     private fun v(g: DeckGeometry, p: Point) = if (g.orientation == FramingOrientation.WIDTHWAYS) p.y else p.x
@@ -367,5 +603,8 @@ object DeckCalculator {
         val actual = "${format(profile.depthMm)} × ${format(profile.thicknessMm)} mm"
         return if (profile.name == actual) profile.label else "${profile.name} · actual $actual · ${profile.species}"
     }
+    private fun cutSchedule(cuts: List<Double>): String = cuts.groupBy {
+        BigDecimal.valueOf(it).setScale(3, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+    }.entries.sortedBy { it.key.toDouble() }.joinToString(", ") { (cut, pieces) -> "${pieces.size} × $cut mm" }
     private fun format(value: Double): String = if (value == floor(value)) value.toLong().toString() else java.math.BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
 }

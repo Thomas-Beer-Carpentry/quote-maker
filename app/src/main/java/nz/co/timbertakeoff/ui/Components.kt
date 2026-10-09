@@ -183,6 +183,7 @@ internal fun Materials(lines: List<MaterialLine>, consolidated: Boolean = false)
                                     .joinToString("  ·  ") { (length, pieces) -> "${pieces.size} × $length mm" }
                                 Text("Cut lengths: $cuts", style = MaterialTheme.typography.bodySmall)
                             }
+                            line.cutNotes.forEach { note -> Text(note, style = MaterialTheme.typography.bodySmall) }
                         }
                     }
                 }

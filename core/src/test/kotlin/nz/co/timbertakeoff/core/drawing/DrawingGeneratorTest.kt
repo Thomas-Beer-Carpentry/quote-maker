@@ -28,7 +28,10 @@ class DrawingGeneratorTest {
             DeckInput(widthMm = 20000.0, lengthMm = 4800.0, orientation = FramingOrientation.LENGTHWAYS),
             DeckInput(widthMm = 4800.0, lengthMm = 20000.0, orientation = FramingOrientation.WIDTHWAYS),
             DeckInput(heightMm = 10000.0),
-            DeckInput(orientation = FramingOrientation.WIDTHWAYS)
+            DeckInput(orientation = FramingOrientation.WIDTHWAYS),
+            DeckInput(decking = Profiles.decking[1], pictureFrame = true),
+            DeckInput(decking = Profiles.decking[1], pictureFrame = true, orientation = FramingOrientation.WIDTHWAYS,
+                pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS)
         )
         inputs.forEach { input -> SheetSize.entries.forEach { size ->
             val sheets = DrawingGenerator.generate(result(input), DrawingTitle("Test job", "Client", "Deck"), size)
@@ -46,6 +49,7 @@ class DrawingGeneratorTest {
                             bound(sheet, element.x, element.y); bound(sheet, element.x + element.width, element.y + element.height)
                         }
                         is DrawingElement.Circle -> { bound(sheet, element.x - element.radiusMm, element.y - element.radiusMm); bound(sheet, element.x + element.radiusMm, element.y + element.radiusMm) }
+                        is DrawingElement.Polygon -> { assertTrue(element.points.size >= 3); element.points.forEach { bound(sheet, it.x, it.y) } }
                         is DrawingElement.Text -> { bound(sheet, element.x, element.y); assertTrue("Text must remain readable at printed scale", element.sizeMm >= 2.2) }
                     }
                 }
@@ -128,6 +132,125 @@ class DrawingGeneratorTest {
         assertTrue(texts(section).contains("500 EMBEDMENT"))
         assertTrue(texts(section).contains("600 HOLE"))
         assertTrue(texts(section).contains("400 HOLE"))
+    }
+
+    @Test fun `picture frame mitres and first infill rip come from calculated board geometry`() {
+        listOf(FramingOrientation.LENGTHWAYS, FramingOrientation.WIDTHWAYS).forEach { orientation ->
+            val input = DeckInput(widthMm = 3900.0, lengthMm = 5200.0, decking = Profiles.decking[1],
+                pictureFrame = true, orientation = orientation)
+            val calculated = result(input)
+            SheetSize.entries.forEach { size ->
+                val sheet = DrawingGenerator.generate(calculated, sheetSize = size)[1]
+                val scale = sheet.scaleDenominator!!
+                val perimeter = sheet.elements.filterIsInstance<DrawingElement.Rect>().single { rect ->
+                    abs(rect.width - (input.widthMm + 40.0) / scale) < 0.00001 &&
+                        abs(rect.height - (input.lengthMm + 40.0) / scale) < 0.00001 && rect.weightMm == 0.4
+                }
+                val polygons = sheet.elements.filterIsInstance<DrawingElement.Polygon>()
+                assertEquals("Each of the four full-width mitred perimeter boards is a vector polygon", 4, polygons.size)
+                calculated.geometry.boards.filter { it.role == DeckBoardRole.PICTURE_FRAME }.forEach { board ->
+                    val expected = board.outline.map { Point(perimeter.x + (it.x + input.overhangMm) / scale,
+                        perimeter.y + (it.y + input.overhangMm) / scale) }
+                    assertTrue("The frame outline must match the takeoff geometry at printed scale", polygons.any { polygon ->
+                        polygon.points.size == expected.size && polygon.points.zip(expected).all { (actual, wanted) ->
+                            abs(actual.x - wanted.x) < 0.00001 && abs(actual.y - wanted.y) < 0.00001
+                        }
+                    })
+                }
+                val allText = texts(sheet).joinToString(" ")
+                assertTrue(allText.contains("4 full-width frame boards"))
+                assertTrue(allText.contains("45° mitred corners"))
+                assertTrue(allText.contains("to frame and between infill"))
+                if (calculated.geometry.startingBoardWidthMm < input.actualDeckingWidthMm - 0.001) {
+                    assertTrue(allText.contains("FIRST INFILL AFTER FRAME: RIP"))
+                    assertTrue(allText.contains("INFILL RIP ${DrawingGenerator.mm(calculated.geometry.startingBoardWidthMm)}"))
+                }
+            }
+        }
+    }
+
+    @Test fun `nogs have stronger outlines and picture frame interfaces show their actual offsets`() {
+        val calculated = result(DeckInput(decking = Profiles.decking[1], pictureFrame = true))
+        SheetSize.entries.forEach { size ->
+            val sheets = DrawingGenerator.generate(calculated, sheetSize = size)
+            val framing = sheets[0]
+            val scale = framing.scaleDenominator!!
+            val nogs = calculated.geometry.members.filter { it.kind == MemberKind.NOG }
+            assertTrue(nogs.isNotEmpty())
+            val drawnNogs = framing.elements.filterIsInstance<DrawingElement.Rect>().filter { it.weightMm == 0.4 }
+            nogs.forEach { nog ->
+                val horizontal = abs(nog.start.y - nog.end.y) < 0.00001
+                assertTrue("Nogs retain their actual cuts with an obvious line weight", drawnNogs.any { rect ->
+                    abs(rect.width - (if (horizontal) nog.lengthMm else nog.thicknessMm) / scale) < 0.00001 &&
+                        abs(rect.height - (if (horizontal) nog.thicknessMm else nog.lengthMm) / scale) < 0.00001
+                })
+            }
+            assertEquals("140 mm boards less 20 mm overhang give 120 mm interface centres", 2, texts(framing).count { it == "120" })
+            assertTrue(texts(framing).joinToString(" ").contains("PF1 interface CL 120 mm"))
+            assertTrue(framing.elements.filterIsInstance<DrawingElement.Rect>().any { rect -> rect.weightMm == 0.45 &&
+                (abs(rect.width - 45.0 / scale) < 0.00001 || abs(rect.height - 45.0 / scale) < 0.00001) })
+            val detail = sheets.single { it.code == "D04" }
+            assertEquals("M01 stays the fourth sheet", "M01", sheets[3].code)
+            assertTrue(detail.scaleDenominator!! < scale)
+            val detailText = texts(detail).joinToString(" ")
+            assertTrue(detailText.contains("PK1 finished 140 × 7.5 mm, 45 mm cut"))
+            assertTrue(texts(detail).contains("7.5"))
+            assertTrue(texts(detail).contains("45 CUT"))
+            assertTrue(texts(framing).joinToString(" ").contains("enlarged detail D04"))
+            assertTrue("Detail notes must end above the title block", detail.elements.filterIsInstance<DrawingElement.Text>()
+                .filter { it.x == size.widthMm - 77.0 }.all { it.y < size.heightMm - 36.0 })
+        }
+    }
+
+    @Test fun `bracket section cuts posts at ground and omits holes and embedment`() {
+        val input = DeckInput(heightMm = 1200.0, bearer = Profiles.framing[2], joist = Profiles.framing[1],
+            pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS)
+        SheetSize.entries.forEach { size ->
+            val sheet = DrawingGenerator.generate(result(input), sheetSize = size)[2]
+            val labels = texts(sheet)
+            val allText = labels.joinToString(" ")
+            assertTrue(labels.contains("751 POST CUT"))
+            assertTrue(labels.contains("1200 FINISHED HEIGHT"))
+            assertFalse(allText.contains("HOLE"))
+            assertFalse(allText.contains("EMBEDMENT"))
+            assertFalse(allText.contains("Footing 400"))
+            assertTrue(allText.contains("Bracket / anchor specification TBC"))
+            assertTrue(labels.contains("EXISTING CONCRETE / GROUND LEVEL"))
+            assertTrue("New footing aggregate must be absent", sheet.elements.filterIsInstance<DrawingElement.Circle>().isEmpty())
+        }
+    }
+
+    @Test fun `central packer detail labels actual picture frame supports instead of invented joists`() {
+        val calculated = result(DeckInput(widthMm = 2000.0, lengthMm = 540.0, actualDeckingWidthMm = 255.0,
+            pictureFrame = true, orientation = FramingOrientation.LENGTHWAYS,
+            pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS))
+        SheetSize.entries.forEach { size ->
+            val detail = DrawingGenerator.generate(calculated, sheetSize = size).single { it.code == "D04" }
+            val labels = texts(detail)
+            assertTrue(labels.contains("PF1"))
+            assertTrue(labels.contains("PF2"))
+            assertFalse("The opposing picture-frame support is not a J1 joist", labels.contains("J1"))
+            assertTrue(labels.contains("25"))
+            assertTrue(labels.joinToString(" ").contains("1 piece of this finished size"))
+            detail.elements.filterIsInstance<DrawingElement.Rect>().forEach { rect ->
+                bound(detail, rect.x, rect.y)
+                bound(detail, rect.x + rect.width, rect.y + rect.height)
+            }
+        }
+    }
+
+    @Test fun `mixed packer sizes identify their own quantity and refer to the full schedule`() {
+        val calculated = result(DeckInput(decking = Profiles.decking[1], pictureFrame = true,
+            orientation = FramingOrientation.LENGTHWAYS, maxJoistSpacingMm = 60.0))
+        assertEquals(4, calculated.geometry.members.count { it.kind == MemberKind.PICTURE_FRAME_PACKER })
+        SheetSize.entries.forEach { size ->
+            val detail = DrawingGenerator.generate(calculated, sheetSize = size).single { it.code == "D04" }
+            val note = texts(detail).joinToString(" ")
+            assertTrue(note.contains("PK1 finished 140 × 7.5 mm, 45 mm cut. 2 pieces of this finished size"))
+            assertTrue(note.contains("Other packer widths occur"))
+            assertTrue("All packer notes must fit above the title block", detail.elements.filterIsInstance<DrawingElement.Text>()
+                .filter { it.x == size.widthMm - 77.0 }.all { it.y < size.heightMm - 36.0 })
+        }
     }
 
     private fun texts(sheet: DrawingSheet) = sheet.elements.filterIsInstance<DrawingElement.Text>().map { it.text }

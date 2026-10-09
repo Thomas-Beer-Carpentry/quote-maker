@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
@@ -50,6 +51,18 @@ object DrawingRenderer {
                     paint.strokeWidth = element.weightMm.toFloat()
                     if (element.fill) paint.style = Paint.Style.FILL
                     canvas.drawCircle(element.x.toFloat(), element.y.toFloat(), element.radiusMm.toFloat(), paint)
+                }
+                is DrawingElement.Polygon -> {
+                    paint.strokeWidth = element.weightMm.toFloat()
+                    paint.strokeJoin = Paint.Join.MITER
+                    if (element.fill) paint.style = Paint.Style.FILL
+                    val path = Path()
+                    element.points.forEachIndexed { index, point ->
+                        if (index == 0) path.moveTo(point.x.toFloat(), point.y.toFloat())
+                        else path.lineTo(point.x.toFloat(), point.y.toFloat())
+                    }
+                    path.close()
+                    canvas.drawPath(path, paint)
                 }
                 is DrawingElement.Text -> {
                     paint.style = Paint.Style.FILL

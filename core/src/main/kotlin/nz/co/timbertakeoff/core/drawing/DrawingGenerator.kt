@@ -4,11 +4,13 @@ import nz.co.timbertakeoff.core.*
 import java.util.Locale
 import kotlin.math.*
 
-/** All four sheets consume the same immutable calculated layout and takeoff. No quantities are inferred by the renderer. */
+/** All sheets consume the same immutable calculated layout and takeoff. No quantities are inferred by the renderer. */
 object DrawingGenerator {
     fun generate(result: DeckResult, title: DrawingTitle = DrawingTitle(), sheetSize: SheetSize = SheetSize.A3): List<DrawingSheet> =
         listOf(framing(result, title, sheetSize), decking(result, title, sheetSize), section(result, title, sheetSize)) +
-            MaterialDrawingGenerator.generate(result, title, sheetSize)
+            MaterialDrawingGenerator.generate(result, title, sheetSize) +
+            if (result.geometry.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
+                listOf(pictureFrameEdgeDetail(result, title, sheetSize)) else emptyList()
 
     internal fun frame(builder: SheetBuilder, code: String, drawing: String, title: DrawingTitle, scale: Double?) {
         val w = builder.size.widthMm
@@ -50,7 +52,20 @@ object DrawingGenerator {
             b.line(p.x - 1.4, p.y, p.x + 1.4, p.y, 0.13)
             b.line(p.x, p.y - 1.4, p.x, p.y + 1.4, 0.13)
         }
-        g.members.filter { it.kind != MemberKind.BEARER }.forEach { drawMember(b, plan, it, if (it.kind == MemberKind.BOUNDARY) 0.35 else 0.2) }
+        g.members.filter { it.kind != MemberKind.BEARER }.forEach { member ->
+            val weight = when (member.kind) {
+                MemberKind.BOUNDARY -> 0.35
+                MemberKind.NOG, MemberKind.PICTURE_FRAME_PACKER -> 0.4
+                MemberKind.PICTURE_FRAME_SUPPORT -> 0.45
+                else -> 0.2
+            }
+            drawMember(b, plan, member, weight)
+            if (member.kind in listOf(MemberKind.NOG, MemberKind.PICTURE_FRAME_SUPPORT, MemberKind.PICTURE_FRAME_PACKER)) {
+                val a = plan.point(member.start)
+                val z = plan.point(member.end)
+                b.line(a.x, a.y, z.x, z.y, 0.13, dashed = true)
+            }
+        }
         b.rect(plan.x, plan.y, input.widthMm / plan.scale, input.lengthMm / plan.scale, 0.45)
         g.joins.forEach { join ->
             val p = plan.point(join.position)
@@ -87,13 +102,27 @@ object DrawingGenerator {
         sampleLabel(b, plan, bearers.firstOrNull(), "B1")
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.JOIST }, "J1")
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.NOG }, "N1")
+        if (input.pictureFrame) {
+            sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }, "PF1")
+            sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_PACKER }, "PK1")
+            pictureFrameSupportDimensions(b, plan, g)
+        }
         val x = size.widthMm - 77.0
         var y = 44.0
         y = b.note(x, y, 61.0, "FRAMING KEY", 3.0, true) + 2.0
         y = b.note(x, y, 61.0, "B1 DOUBLE BEARER ${input.bearer.name}", bold = true) + 2.0
         y = b.note(x, y, 61.0, input.bearer.species) + 3.0
         y = b.note(x, y, 61.0, "J1 JOISTS ${input.joist.name}", bold = true) + 2.0
-        y = b.note(x, y, 61.0, "All four boundaries have two full members. N1 nogs use joist profile.") + 3.0
+        y = b.note(x, y, 61.0, "Double boundaries on all sides. N1 staggered nogs: ${input.joist.name}; heavy outlines / dashed centres.") + 3.0
+        if (input.pictureFrame) {
+            val offset = g.pictureFrameSupportPositionsMm.first()
+            val hasAddedSupports = g.members.any { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }
+            y = b.note(x, y, 61.0, "PF1 interface CL ${mm(offset)} mm from each end edge (board width less overhang).", bold = true) + 2.0
+            y = b.note(x, y, 61.0, if (hasAddedSupports) "Continuous end-to-end ${input.joist.name} nogging supports frame edges / infill ends."
+                else "Existing double boundaries support the frame / infill interfaces.") + 3.0
+            if (g.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
+                y = b.note(x, y, 61.0, "PK1 ripped packers: enlarged detail D04.", bold = true) + 3.0
+        }
         val bearerSpacing = if (g.bearerPositionsMm.size == 1) "Single bearer line." else "Bearer spacing ${mm(g.actualBearerSpacingMm)} mm actual."
         y = b.note(x, y, 61.0, "Joist spacing ${mm(g.actualJoistSpacingMm)} mm maximum actual. $bearerSpacing") + 3.0
         y = b.note(x, y, 61.0, "Joist end CT: ${mm(g.joistCantileverMm)} mm side boundaries; ${mm(g.joistCantileverMm - 2.0 * input.joist.thicknessMm)} mm internal cut ends, both ends.") + 3.0
@@ -102,6 +131,20 @@ object DrawingGenerator {
         if (y + 18.0 < size.heightMm - 45.0) b.note(x, y, 61.0, "Bearer joins are staggered between the doubled members. All framing cuts ≤ 6,000 mm.")
         scaleBar(b, plan, size)
         return b.sheet("D01", "Framing plan", plan.scale)
+    }
+
+    private fun pictureFrameSupportDimensions(b: SheetBuilder, plan: PlanTransform, g: DeckGeometry) {
+        val first = g.pictureFrameSupportPositionsMm.first()
+        val last = g.pictureFrameSupportPositionsMm.last()
+        if (g.orientation == FramingOrientation.WIDTHWAYS) {
+            dimHorizontal(b, plan.x, plan.x + first / plan.scale, plan.y - 4.0, plan.y, mm(first))
+            dimHorizontal(b, plan.x + last / plan.scale, plan.x + g.bearerRunMm / plan.scale,
+                plan.y - 4.0, plan.y, mm(g.bearerRunMm - last))
+        } else {
+            dimVertical(b, plan.y, plan.y + first / plan.scale, plan.x - 4.0, plan.x, mm(first))
+            dimVertical(b, plan.y + last / plan.scale, plan.y + g.bearerRunMm / plan.scale,
+                plan.x - 4.0, plan.x, mm(g.bearerRunMm - last))
+        }
     }
 
     private fun decking(result: DeckResult, title: DrawingTitle, size: SheetSize): DrawingSheet {
@@ -113,9 +156,13 @@ object DrawingGenerator {
         val plan = PlanTransform.fit(width, length, size)
         frame(b, "D02", "Decking plan", title, plan.scale)
         g.boards.forEach { board ->
-            val p = plan.point(Point(board.origin.x + i.overhangMm, board.origin.y + i.overhangMm))
-            b.rect(p.x, p.y, (if (board.runsAlongX) board.lengthMm else board.widthMm) / plan.scale,
-                (if (board.runsAlongX) board.widthMm else board.lengthMm) / plan.scale, 0.16)
+            if (board.outline.isNotEmpty()) {
+                b.polygon(board.outline.map { plan.point(Point(it.x + i.overhangMm, it.y + i.overhangMm)) }, 0.35)
+            } else {
+                val p = plan.point(Point(board.origin.x + i.overhangMm, board.origin.y + i.overhangMm))
+                b.rect(p.x, p.y, (if (board.runsAlongX) board.lengthMm else board.widthMm) / plan.scale,
+                    (if (board.runsAlongX) board.widthMm else board.lengthMm) / plan.scale, 0.16)
+            }
         }
         b.rect(plan.x, plan.y, width / plan.scale, length / plan.scale, 0.4)
         b.rect(plan.x + i.overhangMm / plan.scale, plan.y + i.overhangMm / plan.scale,
@@ -123,7 +170,9 @@ object DrawingGenerator {
         overallDimensions(b, plan, width, length)
         val cx = plan.x + width / plan.scale / 2.0
         val cy = plan.y + length / plan.scale / 2.0
-        val alongX = g.boards.first().runsAlongX
+        val infill = g.boards.filter { it.role == DeckBoardRole.INFILL }
+        val first = infill.first()
+        val alongX = first.runsAlongX
         if (alongX) { arrow(b, cx - 10.0, cy, cx + 10.0, cy); b.text(cx, cy - 3.0, "BOARD DIRECTION", 2.5, TextAlign.CENTER) }
         else { arrow(b, cx, cy + 10.0, cx, cy - 10.0); b.text(cx + 3.0, cy, "BOARD DIRECTION", 2.5, rotation = -90.0) }
         val x = size.widthMm - 77.0
@@ -131,9 +180,16 @@ object DrawingGenerator {
         y = b.note(x, y, 61.0, "DECKING SET-OUT", 3.0, true) + 3.0
         y = b.note(x, y, 61.0, "${i.decking.nominal} · ${i.deckingSpecies}", bold = true) + 3.0
         y = b.note(x, y, 61.0, "Actual finished width ${mm(i.actualDeckingWidthMm)} mm. Thickness ${mm(i.decking.thicknessMm)} mm.") + 3.0
-        y = b.note(x, y, 61.0, "${g.boards.size} continuous board runs. Equal gap ${mm(g.deckingGapMm)} mm.") + 3.0
+        y = b.note(x, y, 61.0, if (i.pictureFrame) "${infill.size} infill runs + 4 full-width frame boards. Equal gap ${mm(g.deckingGapMm)} mm to frame and between infill."
+            else "${g.boards.size} continuous board runs. Equal gap ${mm(g.deckingGapMm)} mm.") + 3.0
+        if (i.pictureFrame) {
+            y = b.note(x, y, 61.0, "PF: ${mm(i.actualDeckingWidthMm)} mm full-width perimeter. Four 45° mitred corners; end boards perpendicular to infill.", bold = true) + 3.0
+        }
         val ripped = abs(g.startingBoardWidthMm - i.actualDeckingWidthMm) > 0.001
-        y = b.note(x, y, 61.0, if (ripped) "START BOARD: RIP TO ${mm(g.startingBoardWidthMm)} mm. Remaining boards full width." else "All boards are full width; no starting rip required.", bold = true) + 3.0
+        y = b.note(x, y, 61.0, if (ripped) {
+            if (i.pictureFrame) "FIRST INFILL AFTER FRAME: RIP TO ${mm(g.startingBoardWidthMm)} mm. Frame remains full width."
+            else "START BOARD: RIP TO ${mm(g.startingBoardWidthMm)} mm. Remaining boards full width."
+        } else "All boards are full width; no starting rip required.", bold = true) + 3.0
         y = b.note(x, y, 61.0, "Decking overhang ${mm(i.overhangMm)} mm on all four sides. Dashed rectangle is outside framing.") + 3.0
         b.note(x, y, 61.0, "Decking joins and purchasing stock lengths are excluded. No waste allowance.")
         // Overhang details remain legible even where their physical scale is very small.
@@ -141,9 +197,15 @@ object DrawingGenerator {
         leader(b, topX, plan.y + i.overhangMm / plan.scale, topX + 8.0, plan.y - 7.0, "${mm(i.overhangMm)} OVERHANG", false)
         val leftY = plan.y + length / plan.scale * 0.65
         leader(b, plan.x + i.overhangMm / plan.scale, leftY, plan.x - 9.0, leftY + 9.0, "${mm(i.overhangMm)}", true)
-        val first = g.boards.first()
         val firstP = plan.point(Point(first.origin.x + i.overhangMm, first.origin.y + i.overhangMm))
-        if (ripped) leader(b, firstP.x + (if (alongX) 5.0 else first.widthMm / plan.scale / 2.0), firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else 5.0), plan.x + 8.0, plan.y - 15.0, "START ${mm(first.widthMm)}", false)
+        val ripAlongRun = min(5.0, first.lengthMm / plan.scale / 2.0)
+        if (ripped) leader(b, firstP.x + (if (alongX) ripAlongRun else first.widthMm / plan.scale / 2.0), firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else ripAlongRun), plan.x + 8.0, plan.y - 15.0, "${if (i.pictureFrame) "INFILL RIP" else "START"} ${mm(first.widthMm)}", false)
+        if (i.pictureFrame) {
+            val frameBoard = g.boards.first { it.role == DeckBoardRole.PICTURE_FRAME }
+            val centre = Point(frameBoard.outline.map { it.x }.average(), frameBoard.outline.map { it.y }.average())
+            val fp = plan.point(Point(centre.x + i.overhangMm, centre.y + i.overhangMm))
+            leader(b, fp.x, fp.y, plan.x + width / plan.scale + 3.0, plan.y - 8.0, "PF", false)
+        }
         scaleBar(b, plan, size)
         return b.sheet("D02", "Decking plan", plan.scale)
     }
@@ -152,11 +214,14 @@ object DrawingGenerator {
         val b = SheetBuilder(size)
         val i = result.input
         val g = result.geometry
+        val inConcrete = i.pileConnection == PileConnection.CONCRETE_FOOTINGS
         val availableW = size.widthMm - 133.0
         val availableH = size.heightMm - 106.0
-        val scale = chooseScale(max(g.joistRunMm / availableW, (i.heightMm + 600.0) / availableH))
+        val belowGroundExtent = if (inConcrete) 600.0 else 50.0
+        val sectionHeight = i.heightMm + belowGroundExtent
+        val scale = chooseScale(max(g.joistRunMm / availableW, sectionHeight / availableH))
         val sx = 36.0 + (availableW - g.joistRunMm / scale) / 2.0
-        val top = 46.0 + (availableH - (i.heightMm + 600.0) / scale) / 2.0
+        val top = 46.0 + (availableH - sectionHeight / scale) / 2.0
         val ground = top + i.heightMm / scale
         val run = g.joistRunMm / scale
         val deckBottom = top + i.decking.thicknessMm / scale
@@ -170,33 +235,154 @@ object DrawingGenerator {
             val bearerW = 2.0 * i.bearer.thicknessMm / scale
             b.rect(x - bearerW / 2.0, joistBottom, bearerW, i.bearer.depthMm / scale, 0.35)
             b.line(x, joistBottom, x, bearerBottom, 0.18)
-            b.rect(x - 62.5 / scale, bearerBottom, 125.0 / scale, (g.pileAboveGroundMm + 500.0) / scale, 0.35)
-            b.rect(x - 200.0 / scale, ground, 400.0 / scale, 600.0 / scale, 0.25)
-            // Sparse aggregate notation identifies concrete without obscuring the pile.
-            val dots = max(2, floor(400.0 / scale / 2.5).toInt())
-            repeat(dots) { n ->
-                val dx = x - 180.0 / scale + n * 360.0 / scale / (dots - 1)
-                if (abs(dx - x) > 72.0 / scale) repeat(3) { row -> b.circle(dx, ground + (100.0 + row * 200.0) / scale, 0.16, fill = true) }
+            b.rect(x - 62.5 / scale, bearerBottom, 125.0 / scale, g.piles.first().lengthMm / scale, 0.35)
+            if (inConcrete) {
+                b.rect(x - 200.0 / scale, ground, 400.0 / scale, 600.0 / scale, 0.25)
+                // Sparse aggregate notation identifies concrete without obscuring the pile.
+                val dots = max(2, floor(400.0 / scale / 2.5).toInt())
+                repeat(dots) { n ->
+                    val dx = x - 180.0 / scale + n * 360.0 / scale / (dots - 1)
+                    if (abs(dx - x) > 72.0 / scale) repeat(3) { row -> b.circle(dx, ground + (100.0 + row * 200.0) / scale, 0.16, fill = true) }
+                }
+            } else {
+                // Schematic bracket body only: no bolts, anchors or implied structural detail.
+                val left = x - 62.5 / scale - 0.6
+                val right = x + 62.5 / scale + 0.6
+                b.line(left, ground - 2.5, left, ground, 0.3)
+                b.line(left, ground, right, ground, 0.3)
+                b.line(right, ground, right, ground - 2.5, 0.3)
             }
         }
         b.line(sx - 9.0, ground, sx + run + 9.0, ground, 0.45)
-        b.text(sx, ground - 2.5, "FLAT LEVEL GROUND", 2.5)
+        b.text(sx, ground - 2.5, if (inConcrete) "FLAT LEVEL GROUND" else "EXISTING CONCRETE / GROUND LEVEL", 2.5)
+        if (!inConcrete) {
+            var hatchX = sx - 7.0
+            while (hatchX < sx + run + 7.0) {
+                b.line(hatchX, ground + 0.7, hatchX - 1.6, ground + 2.3, 0.13)
+                hatchX += 4.0
+            }
+        }
         dimVertical(b, top, ground, sx - 17.0, sx, "${mm(i.heightMm)} FINISHED HEIGHT")
         val first = sx + g.bearerPositionsMm.first() / scale
-        dimVertical(b, ground, ground + 500.0 / scale, sx - 9.0, first - 62.5 / scale, "500 EMBEDMENT")
-        dimVertical(b, ground, ground + 600.0 / scale, sx - 17.0, first - 200.0 / scale, "600 HOLE")
-        dimHorizontal(b, first - 200.0 / scale, first + 200.0 / scale, ground + 600.0 / scale + 7.0, ground + 600.0 / scale, "400 HOLE")
-        dimVertical(b, bearerBottom, ground + 500.0 / scale, sx + run + 12.0, sx + run, "${mm(g.piles.first().lengthMm)} PILE CUT")
+        if (inConcrete) {
+            dimVertical(b, ground, ground + 500.0 / scale, sx - 9.0, first - 62.5 / scale, "500 EMBEDMENT")
+            dimVertical(b, ground, ground + 600.0 / scale, sx - 17.0, first - 200.0 / scale, "600 HOLE")
+            dimHorizontal(b, first - 200.0 / scale, first + 200.0 / scale, ground + 600.0 / scale + 7.0, ground + 600.0 / scale, "400 HOLE")
+        }
+        dimVertical(b, bearerBottom, ground + (if (inConcrete) 500.0 else 0.0) / scale,
+            sx + run + 12.0, sx + run, "${mm(g.piles.first().lengthMm)} ${if (inConcrete) "PILE" else "POST"} CUT")
         val x = size.widthMm - 77.0
         var y = 44.0
         y = b.note(x, y, 61.0, "SECTION NOTES", 3.0, true) + 3.0
         y = b.note(x, y, 61.0, "Decking ${i.decking.nominal}; ${mm(i.decking.thicknessMm)} mm thickness.") + 3.0
         y = b.note(x, y, 61.0, "Joist ${i.joist.name}, sitting on doubled ${i.bearer.name} bearers.") + 3.0
-        y = b.note(x, y, 61.0, "Pile 125 × 125 mm. Above ground ${mm(g.pileAboveGroundMm)} mm; cut length ${mm(g.piles.first().lengthMm)} mm.") + 3.0
-        y = b.note(x, y, 61.0, "Footing 400 × 400 mm square × 600 mm deep. Pile embedment 500 mm.") + 3.0
-        y = b.note(x, y, 61.0, "Finished height includes decking, joist and bearer depths. Concrete volume excludes embedded pile displacement.") + 3.0
+        y = b.note(x, y, 61.0, "${if (inConcrete) "Pile" else "Post"} 125 × 125 mm. Above ground ${mm(g.pileAboveGroundMm)} mm; cut length ${mm(g.piles.first().lengthMm)} mm.") + 3.0
+        if (inConcrete) {
+            y = b.note(x, y, 61.0, "Footing 400 × 400 mm square × 600 mm deep. Pile embedment 500 mm.") + 3.0
+            y = b.note(x, y, 61.0, "Finished height includes decking, joist and bearer depths. Concrete volume excludes embedded pile displacement.") + 3.0
+        } else {
+            y = b.note(x, y, 61.0, "Existing concrete. Bracket / anchor specification TBC.", bold = true) + 3.0
+            y = b.note(x, y, 61.0, "Post extends from ground to underside of bearer. No below-ground length or bracket standoff allowance.") + 3.0
+            y = b.note(x, y, 61.0, "Bracket symbol is schematic. Existing concrete thickness and suitability are not assessed.") + 3.0
+        }
         b.note(x, y, 61.0, "Section shows one representative pile on each bearer line. Refer D01 for all pile positions.")
         return b.sheet("D03", "Typical section along joists", scale)
+    }
+
+    /** Actual timber outlines enlarged separately so narrow ripped packers remain visible in print. */
+    private fun pictureFrameEdgeDetail(result: DeckResult, title: DrawingTitle, size: SheetSize): DrawingSheet {
+        val b = SheetBuilder(size)
+        val i = result.input
+        val g = result.geometry
+        fun uv(p: Point) = if (g.orientation == FramingOrientation.WIDTHWAYS) p else Point(p.y, p.x)
+        val packers = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_PACKER }
+        val packer = packers.minBy { uv(it.start).x }
+        val pa = uv(packer.start)
+        val pz = uv(packer.end)
+        val row = (pa.y + pz.y) / 2.0
+        val t = i.joist.thicknessMm
+        val leftCentre = g.joistPositionsMm.last { it < pa.x }
+        val rightCentre = g.joistPositionsMm.first { it > pa.x }
+        val minU = max(0.0, leftCentre - 2.0 * t)
+        val nextCentre = g.joistPositionsMm.firstOrNull { it > rightCentre + 0.001 } ?: rightCentre
+        val maxU = min(g.bearerRunMm, nextCentre + t / 2.0)
+        val extentU = maxU - minU
+        val extentV = 4.0 * t
+        val availableW = size.widthMm - 140.0
+        val availableH = size.heightMm - 146.0
+        val minimumScale = max(extentU / availableW, extentV / availableH)
+        val scale = listOf(2.0, 5.0, 10.0, 20.0).firstOrNull { it >= minimumScale } ?: chooseScale(minimumScale)
+        val sx = 38.0 + (availableW - extentU / scale) / 2.0
+        val sy = 70.0 + (availableH - extentV / scale) / 2.0
+        val minV = row - extentV / 2.0
+        val maxV = row + extentV / 2.0
+        fun detailPoint(p: Point) = Point(sx + (p.x - minU) / scale, sy + (p.y - minV) / scale)
+        frame(b, "D04", "Picture-frame edge detail", title, scale)
+        val verticalMembers = g.members.filter { member ->
+            member.kind in listOf(MemberKind.JOIST, MemberKind.BOUNDARY, MemberKind.PICTURE_FRAME_SUPPORT) &&
+                abs(uv(member.start).x - uv(member.end).x) < 0.001 &&
+                uv(member.start).x - member.thicknessMm / 2.0 >= minU - 0.001 &&
+                uv(member.start).x + member.thicknessMm / 2.0 <= maxU + 0.001 &&
+                max(uv(member.start).y, uv(member.end).y) > minV && min(uv(member.start).y, uv(member.end).y) < maxV
+        }
+        verticalMembers.forEach { member ->
+            val a = uv(member.start)
+            val z = uv(member.end)
+            val p = detailPoint(Point(a.x - member.thicknessMm / 2.0, max(min(a.y, z.y), minV)))
+            val height = (min(max(a.y, z.y), maxV) - max(min(a.y, z.y), minV)) / scale
+            b.rect(p.x, p.y, member.thicknessMm / scale, height,
+                if (member.kind == MemberKind.PICTURE_FRAME_SUPPORT) 0.45 else if (member.kind == MemberKind.BOUNDARY) 0.35 else 0.2)
+            if (member.kind == MemberKind.PICTURE_FRAME_SUPPORT)
+                b.line(p.x + member.thicknessMm / scale / 2.0, p.y, p.x + member.thicknessMm / scale / 2.0, p.y + height, 0.13, dashed = true)
+        }
+        verticalMembers.distinctBy { it.runId }.forEach { member ->
+            val centre = detailPoint(uv(member.start)).x
+            b.text(centre, sy - 3.0, member.runId, 2.5, TextAlign.CENTER, bold = true)
+        }
+        val visibleNogs = g.members.filter { member ->
+            if (member.kind != MemberKind.NOG) false else {
+                val a = uv(member.start)
+                val z = uv(member.end)
+                min(a.x, z.x) >= minU - 0.001 && max(a.x, z.x) <= maxU + 0.001 &&
+                    abs((a.y + z.y) / 2.0 - row) + member.thicknessMm / 2.0 <= extentV / 2.0
+            }
+        }
+        visibleNogs.forEach { member ->
+            val a = detailPoint(uv(member.start))
+            val z = detailPoint(uv(member.end))
+            b.rect(min(a.x, z.x), a.y - member.thicknessMm / scale / 2.0, abs(z.x - a.x), member.thicknessMm / scale, 0.4)
+            b.line(a.x, a.y, z.x, z.y, 0.13, dashed = true)
+        }
+        val a = detailPoint(pa)
+        val z = detailPoint(pz)
+        b.rect(a.x - packer.thicknessMm / scale / 2.0, min(a.y, z.y), packer.thicknessMm / scale, abs(z.y - a.y), 0.4)
+        leader(b, a.x, (a.y + z.y) / 2.0, sx + extentU / scale * 0.65, sy - 16.0, "PK1", false)
+        val stripLeft = a.x - packer.thicknessMm / scale / 2.0
+        val stripRight = a.x + packer.thicknessMm / scale / 2.0
+        dimHorizontal(b, stripLeft, stripRight, sy - 8.0, min(a.y, z.y), mm(packer.thicknessMm))
+        dimVertical(b, min(a.y, z.y), max(a.y, z.y), sx + extentU / scale + 10.0, stripRight, "${mm(packer.lengthMm)} CUT")
+        val height = extentV / scale
+        if (minU < 0.001) {
+            val support = g.pictureFrameSupportPositionsMm.first()
+            dimHorizontal(b, sx, detailPoint(Point(support, row)).x, sy + height + 13.0, sy + height, "${mm(support)} PF1 CL")
+        } else {
+            dimHorizontal(b, detailPoint(Point(leftCentre, row)).x, detailPoint(Point(rightCentre, row)).x,
+                sy + height + 13.0, sy + height, "${mm(rightCentre - leftCentre)} CL")
+        }
+        val matching = packers.count { abs(it.thicknessMm - packer.thicknessMm) < 0.001 &&
+            abs(it.profile.depthMm - packer.profile.depthMm) < 0.001 && abs(it.lengthMm - packer.lengthMm) < 0.001 }
+        val x = size.widthMm - 77.0
+        var y = 44.0
+        y = b.note(x, y, 61.0, "ENLARGED EDGE DETAIL", 3.0, true) + 3.0
+        y = b.note(x, y, 61.0, "Representative bay in plan. Horizontal axis follows decking; vertical axis follows joists.") + 3.0
+        y = b.note(x, y, 61.0, "Member IDs follow D01: BJ boundary joists; PF frame support; J joists.") + 3.0
+        y = b.note(x, y, 61.0, "PK1 finished ${mm(packer.profile.depthMm)} × ${mm(packer.thicknessMm)} mm, ${mm(packer.lengthMm)} mm cut. $matching ${if (matching == 1) "piece" else "pieces"} of this finished size.", bold = true) + 3.0
+        y = b.note(x, y, 61.0, "Rip from ${i.joist.name} framing. Source cut lengths are in overall timber totals; no ripping waste allowance.") + 3.0
+        if (matching != packers.size)
+            y = b.note(x, y, 61.0, "Other packer widths occur in this layout; refer M01 for their exact cut schedule.") + 3.0
+        y = b.note(x, y, 61.0, "Packers retain calculated blocking row positions. Refer D01 for all locations.") + 3.0
+        b.note(x, y, 61.0, "Outlines use actual calculated members in this bay. Detail has its own printed scale.")
+        return b.sheet("D04", "Picture-frame edge detail", scale)
     }
 
     private fun drawMember(b: SheetBuilder, t: PlanTransform, member: TimberMember, weight: Double, dashed: Boolean = false) {
