@@ -12,6 +12,11 @@ fun main(args: Array<String>) {
             decking = Profiles.decking[1], orientation = FramingOrientation.LENGTHWAYS),
         "picture-frame-" to DeckInput(decking = Profiles.decking[1], pictureFrame = true),
         "bracket-picture-frame-" to DeckInput(decking = Profiles.decking[1], pictureFrame = true,
+            pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS, orientation = FramingOrientation.WIDTHWAYS),
+        "large-staggered-boundary-" to DeckInput(widthMm = 8000.0, lengthMm = 9000.0,
+            orientation = FramingOrientation.LENGTHWAYS),
+        "large-picture-frame-brackets-" to DeckInput(widthMm = 8000.0, lengthMm = 9000.0,
+            decking = Profiles.decking[1], pictureFrame = true,
             pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS, orientation = FramingOrientation.WIDTHWAYS)
     )
     for ((prefix, input) in examples) {

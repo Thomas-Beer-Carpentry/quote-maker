@@ -11,7 +11,9 @@ object DrawingGenerator {
             MaterialDrawingGenerator.generate(result, title, sheetSize) +
             (if (result.geometry.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
                 listOf(pictureFrameEdgeDetail(result, title, sheetSize)) else emptyList()) +
-            DeckingSetoutDrawingGenerator.generate(result, title, sheetSize)
+            DeckingSetoutDrawingGenerator.generate(result, title, sheetSize) +
+            (if (endBoundaryJoins(result.geometry).isNotEmpty())
+                listOf(endBoundarySpliceDetail(result, title, sheetSize)) else emptyList())
 
     internal fun frame(builder: SheetBuilder, code: String, drawing: String, title: DrawingTitle, scale: Double?) {
         val w = builder.size.widthMm
@@ -43,6 +45,8 @@ object DrawingGenerator {
         val b = SheetBuilder(size)
         val input = result.input
         val g = result.geometry
+        val endJoins = endBoundaryJoins(g)
+        val runs = g.members.associateBy { it.runId to it.layer }
         val plan = PlanTransform.fit(input.widthMm, input.lengthMm, size)
         frame(b, "D01", "Framing plan", title, plan.scale)
         val bearers = g.members.filter { it.kind == MemberKind.BEARER }
@@ -71,14 +75,8 @@ object DrawingGenerator {
         g.joins.forEach { join ->
             val p = plan.point(join.position)
             // Cross bars are a join notation, never a fixing representation.
-            val horizontal = (join.kind == MemberKind.BEARER) == (g.orientation == FramingOrientation.WIDTHWAYS)
-            if (horizontal) {
-                b.line(p.x - 0.8, p.y - 1.5, p.x + 0.2, p.y + 1.5, 0.3)
-                b.line(p.x + 0.2, p.y - 1.5, p.x + 1.2, p.y + 1.5, 0.3)
-            } else {
-                b.line(p.x - 1.5, p.y - 0.8, p.x + 1.5, p.y + 0.2, 0.3)
-                b.line(p.x - 1.5, p.y + 0.2, p.x + 1.5, p.y + 1.2, 0.3)
-            }
+            val run = runs.getValue(join.runId to join.layer)
+            spliceMark(b, p, abs(run.start.y - run.end.y) < 0.001)
         }
         overallDimensions(b, plan, input.widthMm, input.lengthMm)
         // Bearer and joist chains use pair centres and actual installed member centres.
@@ -103,6 +101,12 @@ object DrawingGenerator {
         sampleLabel(b, plan, bearers.firstOrNull(), "B1")
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.JOIST }, "J1")
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.NOG }, "N1")
+        endJoins.firstOrNull()?.let { join ->
+            val p = plan.point(join.position)
+            if (g.orientation == FramingOrientation.LENGTHWAYS)
+                leader(b, p.x, p.y, plan.x - 6.0, p.y - 8.0, "EB", true)
+            else leader(b, p.x, p.y, p.x + 8.0, plan.y - 6.0, "EB", false)
+        }
         if (input.pictureFrame) {
             val landingX = plan.x + input.widthMm / plan.scale +
                 min(26.0, max(4.0, size.widthMm - 77.0 - plan.x - input.widthMm / plan.scale - 16.0))
@@ -118,22 +122,38 @@ object DrawingGenerator {
         y = b.note(x, y, 61.0, "B1 DOUBLE BEARER ${input.bearer.name}", bold = true) + 2.0
         y = b.note(x, y, 61.0, input.bearer.species) + 3.0
         y = b.note(x, y, 61.0, "J1 JOISTS ${input.joist.name}", bold = true) + 2.0
-        y = b.note(x, y, 61.0, "Double boundaries on all sides. N1 staggered nogs: ${input.joist.name}; heavy outlines / dashed centres.") + 3.0
+        y = b.note(x, y, 61.0, if (endJoins.isEmpty())
+            "Double boundaries on all sides. N1 staggered nogs: ${input.joist.name}; heavy outlines / dashed centres."
+            else "Double boundaries. N1 staggered ${input.joist.name} nogs: heavy outlines / dashed CL.") + 3.0
         if (input.pictureFrame) {
             val offset = g.pictureFrameSupportPositionsMm.first()
             val hasAddedSupports = g.members.any { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }
-            y = b.note(x, y, 61.0, "PF1 interface CL ${mm(offset)} mm from each end edge (board width less overhang).", bold = true) + 2.0
-            y = b.note(x, y, 61.0, if (hasAddedSupports) "Continuous end-to-end ${input.joist.name} nogging supports frame edges / infill ends."
+            y = b.note(x, y, 61.0, if (endJoins.isEmpty())
+                "PF1 interface CL ${mm(offset)} mm from each end edge (board width less overhang)."
+                else "PF1 interface CL ${mm(offset)} mm from framing ends.", bold = true) + 2.0
+            y = b.note(x, y, 61.0, if (hasAddedSupports && endJoins.isNotEmpty()) "Continuous ${input.joist.name} nogging at frame / infill ends."
+                else if (hasAddedSupports) "Continuous end-to-end ${input.joist.name} nogging supports frame edges / infill ends."
                 else "Existing double boundaries support the frame / infill interfaces.") + 3.0
             if (g.members.any { it.kind == MemberKind.PICTURE_FRAME_PACKER })
                 y = b.note(x, y, 61.0, "PK1 ripped packers: enlarged detail D04.", bold = true) + 3.0
         }
         val bearerSpacing = if (g.bearerPositionsMm.size == 1) "Single bearer line." else "Bearer spacing ${mm(g.actualBearerSpacingMm)} mm actual."
         y = b.note(x, y, 61.0, "Joist spacing ${mm(g.actualJoistSpacingMm)} mm maximum actual. $bearerSpacing") + 3.0
-        y = b.note(x, y, 61.0, "Joist end CT: ${mm(g.joistCantileverMm)} mm side boundaries; ${mm(g.joistCantileverMm - 2.0 * input.joist.thicknessMm)} mm internal cut ends, both ends.") + 3.0
-        y = b.note(x, y, 61.0, "125 × 125 piles: ${g.piles.size}. Bearer end cantilevers 200 mm both ends.") + 3.0
-        y = b.note(x, y, 61.0, "CT = cantilever to bearer pair centreline. CL = member centreline. Cross bars indicate supported joins.") + 3.0
-        if (y + 18.0 < size.heightMm - 45.0) b.note(x, y, 61.0, "Bearer joins are staggered between the doubled members. All framing cuts ≤ 6,000 mm.")
+        y = b.note(x, y, 61.0, if (endJoins.isEmpty())
+            "Joist end CT: ${mm(g.joistCantileverMm)} mm side boundaries; ${mm(g.joistCantileverMm - 2.0 * input.joist.thicknessMm)} mm internal cut ends, both ends."
+            else "Joist CT ${mm(g.joistCantileverMm)} mm boundary / ${mm(g.joistCantileverMm - 2.0 * input.joist.thicknessMm)} mm internal; each end.") + 3.0
+        y = b.note(x, y, 61.0, if (endJoins.isEmpty())
+            "125 × 125 piles: ${g.piles.size}. Bearer end cantilevers 200 mm both ends."
+            else "125 × 125 piles: ${g.piles.size}. Bearer CT 200 mm each end.") + 3.0
+        y = b.note(x, y, 61.0, if (endJoins.isEmpty())
+            "CT = cantilever to bearer pair centreline. CL = member centreline. Cross bars indicate supported joins."
+            else "CT = bearer CL cantilever. CL = centreline. Cross bars = joins.") + 3.0
+        if (endJoins.isNotEmpty()) {
+            y = b.note(x, y, 61.0, "EB: staggered end-boundary splices at perpendicular joists; D06.", bold = true) + 2.0
+            y = b.note(x, y, 61.0, "Other joist joins over bearers.") + 2.0
+            b.note(x, y, 61.0, "Cuts ≤ 6,000 mm. Bearer joins staggered over piles.")
+        } else if (y + 18.0 < size.heightMm - 45.0)
+            b.note(x, y, 61.0, "Bearer joins are staggered between the doubled members. All framing cuts ≤ 6,000 mm.")
         scaleBar(b, plan, size)
         return b.sheet("D01", "Framing plan", plan.scale)
     }
@@ -425,6 +445,118 @@ object DrawingGenerator {
         y = b.note(x, y, 61.0, "Packers retain calculated blocking row positions. Refer D01 for all locations.") + 3.0
         b.note(x, y, 61.0, "Outlines use actual calculated members in this bay. Detail has its own printed scale.")
         return b.sheet("D04", "Picture-frame edge detail", scale)
+    }
+
+    private fun endBoundaryJoins(g: DeckGeometry): List<MemberJoin> {
+        val runs = g.members.associateBy { it.runId to it.layer }
+        return g.joins.filter { join ->
+            if (join.kind != MemberKind.BOUNDARY) false else {
+                val run = runs.getValue(join.runId to join.layer)
+                val a = framingCoordinates(g, run.start)
+                val z = framingCoordinates(g, run.end)
+                abs(a.y - z.y) < 0.001
+            }
+        }
+    }
+
+    /** Return the engine's u/v axes: u along bearers, v along perpendicular joists. */
+    private fun framingCoordinates(g: DeckGeometry, point: Point) =
+        if (g.orientation == FramingOrientation.LENGTHWAYS) Point(point.y, point.x) else point
+
+    private fun spliceMark(b: SheetBuilder, p: Point, horizontal: Boolean) {
+        if (horizontal) {
+            b.line(p.x - 0.8, p.y - 1.5, p.x + 0.2, p.y + 1.5, 0.3)
+            b.line(p.x + 0.2, p.y - 1.5, p.x + 1.2, p.y + 1.5, 0.3)
+        } else {
+            b.line(p.x - 1.5, p.y - 0.8, p.x + 1.5, p.y + 0.2, 0.3)
+            b.line(p.x - 1.5, p.y + 0.2, p.x + 1.5, p.y + 1.2, 0.3)
+        }
+    }
+
+    /** Enlarged actual pair of end-boundary splices, rather than a generic connection sketch. */
+    private fun endBoundarySpliceDetail(result: DeckResult, title: DrawingTitle, size: SheetSize): DrawingSheet {
+        val b = SheetBuilder(size)
+        val i = result.input
+        val g = result.geometry
+        val t = i.joist.thicknessMm
+        fun uv(point: Point) = framingCoordinates(g, point)
+        val joins = endBoundaryJoins(g).filter { uv(it.position).y < 2.0 * t + 0.001 }
+        val nearPair = joins.filter { it.layer == 0 }.flatMap { first ->
+            joins.filter { it.layer == 1 }.map { second -> first to second }
+        }.minBy { (first, second) -> abs(uv(first.position).x - uv(second.position).x) }
+        val selected = listOf(nearPair.first, nearPair.second).sortedBy { uv(it.position).x }
+        val leftSplice = uv(selected.first().position).x
+        val rightSplice = uv(selected.last().position).x
+        val padding = max(3.0 * t, 100.0)
+        val minU = max(2.0 * t, leftSplice - padding)
+        val maxU = min(g.bearerRunMm - 2.0 * t, rightSplice + padding)
+        val maxV = min(g.joistRunMm - 2.0 * t,
+            max(4.0 * t + 180.0, g.bearerPositionsMm.first() + i.bearer.thicknessMm))
+        val extentU = maxU - minU
+        val availableW = size.widthMm - 140.0
+        val availableH = size.heightMm - 146.0
+        val minimumScale = max(extentU / availableW, maxV / availableH)
+        val scale = listOf(2.0, 5.0, 10.0, 20.0).firstOrNull { it >= minimumScale } ?: chooseScale(minimumScale)
+        val sx = 38.0 + (availableW - extentU / scale) / 2.0
+        val sy = 70.0 + (availableH - maxV / scale) / 2.0
+        fun p(point: Point) = Point(sx + (point.x - minU) / scale, sy + point.y / scale)
+        frame(b, "D06", "End-boundary splice detail", title, scale)
+        g.members.forEach { member ->
+            val a = uv(member.start)
+            val z = uv(member.end)
+            val half = member.thicknessMm / 2.0
+            val horizontal = abs(a.y - z.y) < 0.001
+            val minX = max(minU, if (horizontal) min(a.x, z.x) else a.x - half)
+            val maxX = min(maxU, if (horizontal) max(a.x, z.x) else a.x + half)
+            val minY = max(0.0, if (horizontal) a.y - half else min(a.y, z.y))
+            val maxY = min(maxV, if (horizontal) a.y + half else max(a.y, z.y))
+            if (maxX > minX + 0.001 && maxY > minY + 0.001) {
+                val point = p(Point(minX, minY))
+                val weight = when (member.kind) {
+                    MemberKind.BEARER -> 0.18
+                    MemberKind.BOUNDARY -> 0.35
+                    MemberKind.PICTURE_FRAME_SUPPORT -> 0.45
+                    MemberKind.NOG, MemberKind.PICTURE_FRAME_PACKER -> 0.4
+                    else -> 0.2
+                }
+                b.rect(point.x, point.y, (maxX - minX) / scale, (maxY - minY) / scale,
+                    weight, dashed = member.kind == MemberKind.BEARER)
+            }
+        }
+        // Centreline extensions make the permitted splice/joist alignment visible through both rails.
+        val intersectingJoists = g.members.filter { member ->
+            member.kind == MemberKind.JOIST && abs(uv(member.start).x - uv(member.end).x) < 0.001 &&
+                uv(member.start).x > minU && uv(member.start).x < maxU &&
+                min(uv(member.start).y, uv(member.end).y) < maxV
+        }.distinctBy { it.runId }
+        intersectingJoists.forEach { member ->
+            val x = p(uv(member.start)).x
+            b.line(x, sy - 3.0, x, sy + maxV / scale, 0.13, dashed = true)
+            b.text(x, sy + maxV / scale + 5.0, member.runId, 2.5, TextAlign.CENTER, bold = true)
+        }
+        selected.forEachIndexed { index, join ->
+            val point = p(uv(join.position))
+            spliceMark(b, point, horizontal = true)
+            b.text(point.x, sy - 6.0, "S${index + 1}", 2.5, TextAlign.CENTER, bold = true)
+        }
+        selected.sortedBy { uv(it.position).y }.forEachIndexed { index, join ->
+            val point = p(Point(minU, uv(join.position).y))
+            leader(b, point.x, point.y, sx - 6.0, sy - 2.0 + index * 9.0, join.runId, true)
+        }
+        dimHorizontal(b, p(Point(leftSplice, 0.0)).x, p(Point(rightSplice, 0.0)).x,
+            sy - 16.0, sy, "${mm(rightSplice - leftSplice)} STAGGER")
+        val x = size.widthMm - 77.0
+        var y = 44.0
+        y = b.note(x, y, 61.0, "END-BOUNDARY SPLICES", 3.0, true) + 3.0
+        y = b.note(x, y, 61.0, "Actual near-end double boundary in plan. Horizontal axis follows bearers; vertical axis follows joists.") + 3.0
+        y = b.note(x, y, 61.0, "${i.joist.name} ${i.joist.species}", bold = true) + 3.0
+        selected.forEachIndexed { index, join ->
+            y = b.note(x, y, 61.0, "S${index + 1}: ${join.runId}, ${mm(uv(join.position).x)} mm from framing end.", bold = true) + 2.0
+        }
+        y = b.note(x, y, 61.0, "Each splice is at a perpendicular joist CL. The paired boundary member continues past that splice.") + 3.0
+        y = b.note(x, y, 61.0, "User-supplied estimating rule: these staggered end-boundary splices do not require a bearer below.") + 3.0
+        b.note(x, y, 61.0, "D01 shows all splice locations. Dashed members are actual bearers. All framing cuts ≤ 6,000 mm.")
+        return b.sheet("D06", "End-boundary splice detail", scale)
     }
 
     private fun drawMember(b: SheetBuilder, t: PlanTransform, member: TimberMember, weight: Double, dashed: Boolean = false) {

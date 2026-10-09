@@ -146,13 +146,27 @@ class DeckCalculatorTest {
         assertTrue(overLimit.geometry.members.all { it.lengthMm <= 6000.0 + epsilon })
     }
 
-    @Test fun unsupportedPerpendicularBoundarySpliceIsExplainedAndAlternativeCanRemainValid() {
+    @Test fun longPerpendicularBoundariesUseStaggeredJoistIntersectionsAndBothOrientationsRemainAvailable() {
         val input = DeckInput(widthMm = 4800.0, lengthMm = 8000.0)
         val automatic = success(input)
-        assertEquals(FramingOrientation.WIDTHWAYS, automatic.geometry.orientation)
-        assertTrue(automatic.alternatives.first { it.orientation == FramingOrientation.LENGTHWAYS }.errors.single().contains("supported end-boundary splice"))
-        assertTrue(invalid(input.copy(orientation = FramingOrientation.LENGTHWAYS)).errors.any { it.contains("6000") })
-        assertTrue(invalid(DeckInput(widthMm = 8000.0, lengthMm = 8000.0)).errors.any { it.contains("boundary") })
+        assertTrue(automatic.alternatives.all { it.errors.isEmpty() })
+        assertEquals(automatic.alternatives.minWith(compareBy<OrientationAlternative>(
+            { it.timberLengthMm!! }, { it.pileCount!! },
+            { if (it.orientation == FramingOrientation.LENGTHWAYS) 0 else 1 })).orientation, automatic.recommended)
+        val lengthways = success(input.copy(orientation = FramingOrientation.LENGTHWAYS))
+        val g = lengthways.geometry
+        assertTrue(g.joins.any { it.runId.startsWith("BE") })
+        val crossingJoists = g.members.filter { it.kind == MemberKind.JOIST }.map { u(g, it.start) }
+        g.joins.filter { it.runId.startsWith("BE") }.forEach { join ->
+            assertTrue(crossingJoists.any { abs(it - u(g, join.position)) < epsilon })
+        }
+        for ((first, second) in listOf("BE1" to "BE2", "BE3" to "BE4")) {
+            val firstCuts = g.joins.filter { it.runId == first }.map { u(g, it.position) }
+            val secondCuts = g.joins.filter { it.runId == second }.map { u(g, it.position) }
+            assertTrue(firstCuts.none { a -> secondCuts.any { b -> abs(a - b) < epsilon } })
+        }
+        assertTrue(DeckCalculator.validate(lengthways).isEmpty())
+        assertTrue(DeckCalculator.validate(success(DeckInput(widthMm = 8000.0, lengthMm = 8000.0))).isEmpty())
     }
 
     @Test fun fullWidthBoardsArePreferredEvenWhenRippingCouldGiveCloserToFiveMillimetreGap() {

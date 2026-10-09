@@ -50,8 +50,10 @@ object DeckCalculator {
                 "Preliminary estimating / set-out information. Structural design and compliance have not been verified.",
                 "Exact quantities; no waste allowance or stock-length optimisation.",
                 "Cantilevers and pile supports are measured to bearer-pair centrelines. Interior joists fit between doubled end boundaries.",
-                "Bearer lamination nails include stations at both ends, spaced at no more than 600 mm. Spliced joist ends each receive two nails."
+                "Bearer lamination nails include stations at both ends, spaced at no more than 600 mm. Joist ends at bearer-supported splices each receive two nails."
                 ))
+                if (endBoundarySplices(selected.geometry).isNotEmpty())
+                    add("Doubled end-boundary joins use the supplied exception: butt joins fall at perpendicular joist centrelines and are staggered between the two members, without extra bearing supports. Splice fixing specifications remain to be confirmed.")
                 if (input.pictureFrame) {
                     add("Picture-frame boards are full-width with closed 45° mitres; equal gaps separate the frame and infill. Any rip is the first infill board.")
                     add("Continuous picture-frame interface supports use the joist profile, with supported splices. Two decking screws per perimeter station, evenly spaced at no more than the selected joist spacing between doubled corner boundaries.")
@@ -120,8 +122,6 @@ object DeckCalculator {
         fun point(u: Double, v: Double) = if (orientation == FramingOrientation.WIDTHWAYS) Point(u, v) else Point(v, u)
         if (b < 2.0 * PILE_END - EPS) conflict("Bearer run must be at least 400 mm to accommodate the two 200 mm end cantilevers.")
         if (b <= 4.0 * t || j <= 4.0 * t) conflict("Deck dimensions must exceed the space occupied by the doubled boundaries (${format(4.0 * t)} mm).")
-        if (b - 4.0 * t > MAX_MEMBER + EPS)
-            conflict("Perpendicular end boundary cut length ${format(b - 4.0 * t)} mm exceeds 6000 mm. A supported end-boundary splice detail has not been specified; change orientation or dimensions.")
         val minimumCantilever = 2.0 * t + 90.0
         if (minimumCantilever > 300.0 + EPS)
             conflict("The selected joist thickness leaves no cantilever satisfying both the outside boundary and the interior joist ends (90–300 mm).")
@@ -210,8 +210,13 @@ object DeckCalculator {
         additionalSupports.forEachIndexed { index, u ->
             addRun(MemberKind.PICTURE_FRAME_SUPPORT, "PF${index + 1}", 0, 2.0 * t, j - 2.0 * t, u, false, input.joist, bearerPositions)
         }
-        listOf(t / 2.0, 1.5 * t, j - 1.5 * t, j - t / 2.0).forEachIndexed { index, v ->
-            addRun(MemberKind.BOUNDARY, "BE${index + 1}", index % 2, 2.0 * t, b - 2.0 * t, v, true, input.joist, emptyList())
+        // User-supplied end-boundary exception: joins at actual perpendicular joists,
+        // with the second member's joins excluded from those used by the first.
+        listOf(listOf(t / 2.0, 1.5 * t), listOf(j - 1.5 * t, j - t / 2.0)).forEachIndexed { pair, centres ->
+            val firstJoins = addRun(MemberKind.BOUNDARY, "BE${pair * 2 + 1}", 0,
+                2.0 * t, b - 2.0 * t, centres[0], true, input.joist, internalJoists)
+            addRun(MemberKind.BOUNDARY, "BE${pair * 2 + 2}", 1,
+                2.0 * t, b - 2.0 * t, centres[1], true, input.joist, internalJoists, firstJoins)
         }
         // End boundaries count as restraint rows. Staggered nogs remain within the clear interior.
         val restraintSpan = j - 3.0 * t
@@ -284,7 +289,7 @@ object DeckCalculator {
                 previous[next] = from
             }
         }
-        if (previous.last() < 0) conflict("No supported, staggered splice layout can keep every member at or below 6000 mm.")
+        if (previous.last() < 0) conflict("No permitted splice layout can keep every member at or below 6000 mm while respecting join locations and stagger requirements.")
         val reversed = mutableListOf<Double>()
         var node = nodes.lastIndex
         while (node >= 0) {
@@ -348,7 +353,10 @@ object DeckCalculator {
         }
         timber(MaterialCategory.PILES, "Timber", "125 × 125 mm timber piles · treatment unspecified", g.piles.map { it.lengthMm })
         timber(MaterialCategory.BEARERS, "Timber", materialSpecification(input.bearer), g.members.filter { it.kind == MemberKind.BEARER }.map { it.lengthMm })
-        timber(MaterialCategory.JOISTS, "Timber", materialSpecification(input.joist), g.members.filter { it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY }.map { it.lengthMm })
+        val boundarySplices = endBoundarySplices(g)
+        val boundaryNotes = if (boundarySplices.isEmpty()) emptyList() else listOf(
+            "Doubled end boundaries: ${boundarySplices.size} staggered butt joins at perpendicular joists; no additional bearing supports. Splice fixings to be confirmed.")
+        timber(MaterialCategory.JOISTS, "Timber", materialSpecification(input.joist), g.members.filter { it.kind == MemberKind.JOIST || it.kind == MemberKind.BOUNDARY }.map { it.lengthMm }, boundaryNotes)
         val nogs = g.members.filter { it.kind == MemberKind.NOG }
         val frameSupports = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }
         val packers = g.members.filter { it.kind == MemberKind.PICTURE_FRAME_PACKER }
@@ -383,6 +391,8 @@ object DeckCalculator {
         val packerCount = g.members.count { it.kind == MemberKind.PICTURE_FRAME_PACKER }
         if (packerCount > 0) lines += MaterialLine(MaterialCategory.FIXINGS,
             MaterialKey("Packer fixing sets", "Specification and fasteners per set to be confirmed", "each"), packerCount.toDouble())
+        if (boundarySplices.isNotEmpty()) lines += MaterialLine(MaterialCategory.FIXINGS,
+            MaterialKey("Boundary splice fixing sets", "One per end-boundary butt join · specification and fasteners per set to be confirmed", "each"), boundarySplices.size.toDouble())
         // Count each continuous perpendicular joist once, even if that run has a supported splice.
         val joistRuns = perpendicularJoists.groupBy { it.runId }.values
         val infillScrews = 2 * g.boards.filter { it.role == DeckBoardRole.INFILL }.sumOf { board ->
@@ -429,12 +439,19 @@ object DeckCalculator {
                 add("Outside and interior joist cantilevers must each be 90–300 mm.")
         } else add("At least one bearer line is required.")
         g.joins.forEach { join ->
+            val pieces = g.members.filter { it.kind == join.kind && it.runId == join.runId && it.layer == join.layer }
+            if (pieces.none { samePoint(it.end, join.position) } || pieces.none { samePoint(it.start, join.position) })
+                add("Splice ${join.runId} does not match two meeting physical cuts.")
             if (join.kind == MemberKind.NOG || join.kind == MemberKind.PICTURE_FRAME_PACKER) add("Blocking and ripped packers cannot contain framing splice records.")
             if (join.kind == MemberKind.BEARER) {
                 val support = g.piles.any { abs(u(g, join.position) - u(g, it.position)) < EPS && abs(v(g, join.position) - v(g, it.position)) <= input.bearer.thicknessMm / 2.0 + EPS }
                 if (!support) add("Bearer splice ${join.runId} is not supported by a pile.")
                 if (g.joins.any { other -> other.kind == MemberKind.BEARER && other.runId == join.runId && other.layer != join.layer && abs(u(g, other.position) - u(g, join.position)) < EPS })
                     add("Double bearer splice positions must be staggered.")
+            } else if (pieces.any { isEndBoundaryMember(g, it) }) {
+                val member = pieces.first { isEndBoundaryMember(g, it) }
+                if (abs(v(g, member.start) - v(g, join.position)) > EPS || !hasPerpendicularJoist(input, g, join.position))
+                    add("End-boundary splice ${join.runId} must fall at a perpendicular joist intersection.")
             } else if (g.bearerPositionsMm.none { abs(v(g, join.position) - it) < EPS }) add("Joist splice ${join.runId} is not supported by a bearer.")
         }
         // Check physical cuts as well as the join records so a missing record cannot hide an unsupported splice.
@@ -449,10 +466,14 @@ object DeckCalculator {
                     add("Timber run ${left.runId} has a splice without a matching join record.")
                 if (left.kind == MemberKind.BEARER) {
                     if (g.pilePositionsMm.none { abs(it - u(g, left.end)) < EPS }) add("Bearer cut ${left.runId} has an unsupported splice.")
+                } else if (isEndBoundaryMember(g, left)) {
+                    if (!hasPerpendicularJoist(input, g, left.end))
+                        add("End-boundary cut ${left.runId} must splice at a perpendicular joist intersection.")
                 } else if (alongU || g.bearerPositionsMm.none { abs(it - v(g, left.end)) < EPS })
                     add("Joist cut ${left.runId} has an unsupported splice.")
             }
         }
+        addAll(endBoundaryErrors(input, g))
         if (g.piles.size != g.bearerPositionsMm.size * g.pilePositionsMm.size) add("Every calculated bearer/pile intersection must contain one pile.")
         val embedment = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) PILE_EMBEDMENT else 0.0
         if (g.piles.any { it.lengthMm <= EPS || it.lengthMm < embedment - EPS || !it.lengthMm.isFinite() })
@@ -489,6 +510,59 @@ object DeckCalculator {
         val expectedConcrete = if (input.pileConnection == PileConnection.CONCRETE_FOOTINGS) g.piles.size * (0.096 - 0.0078125) else 0.0
         if (abs(g.excavationM3 - expectedExcavation) > EPS || abs(g.concreteM3 - expectedConcrete) > EPS)
             add("Footing volumes must subtract only the embedded pile displacement.")
+    }.distinct()
+
+    private fun isEndBoundaryMember(g: DeckGeometry, member: TimberMember) =
+        member.kind == MemberKind.BOUNDARY && abs(v(g, member.start) - v(g, member.end)) < EPS
+
+    private fun endBoundarySplices(g: DeckGeometry) = g.joins.filter { join ->
+        join.kind == MemberKind.BOUNDARY && g.members.any {
+            it.runId == join.runId && it.layer == join.layer && isEndBoundaryMember(g, it)
+        }
+    }
+
+    /** The transverse joist meets the inner face of the doubled boundary, not its outer layer. */
+    private fun hasPerpendicularJoist(input: DeckInput, g: DeckGeometry, splice: Point): Boolean {
+        val face = if (v(g, splice) < g.joistRunMm / 2.0) 2.0 * input.joist.thicknessMm
+            else g.joistRunMm - 2.0 * input.joist.thicknessMm
+        return g.members.any { member ->
+            member.kind == MemberKind.JOIST && member.profile == input.joist &&
+                abs(u(g, member.start) - u(g, member.end)) < EPS &&
+                abs(u(g, member.start) - u(g, splice)) < EPS &&
+                (abs(v(g, member.start) - face) < EPS || abs(v(g, member.end) - face) < EPS)
+        }
+    }
+
+    /** Reconstruct actual paired rails so relabelled cuts or omitted join records cannot hide a bad splice. */
+    private fun endBoundaryErrors(input: DeckInput, g: DeckGeometry): List<String> = buildList {
+        val t = input.joist.thicknessMm
+        val centres = listOf(t / 2.0, 1.5 * t, g.joistRunMm - 1.5 * t, g.joistRunMm - t / 2.0)
+        val rails = g.members.filter { isEndBoundaryMember(g, it) }
+        if (rails.any { member -> centres.none { abs(v(g, member.start) - it) < EPS } })
+            add("End-boundary members must occupy the four doubled-boundary centrelines.")
+        val physicalSplices = centres.mapIndexed { index, cross ->
+            val pieces = rails.filter { abs(v(g, it.start) - cross) < EPS }.sortedBy { u(g, it.start) }
+            if (pieces.isEmpty()) add("Each doubled end boundary requires both complete timber members.")
+            else {
+                if (abs(u(g, pieces.first().start) - 2.0 * t) > EPS ||
+                    abs(u(g, pieces.last().end) - (g.bearerRunMm - 2.0 * t)) > EPS)
+                    add("End-boundary cuts must cover the full span between the doubled side boundaries.")
+                if (pieces.any { it.profile != input.joist || abs(it.thicknessMm - t) > EPS ||
+                    it.layer != index % 2 || u(g, it.end) <= u(g, it.start) + EPS })
+                    add("End-boundary cuts must retain the selected joist profile and their doubled-member layer.")
+                if (pieces.zipWithNext().any { (a, z) -> !samePoint(a.end, z.start) })
+                    add("End-boundary timber has a gap or overlapping cuts.")
+            }
+            pieces.dropLast(1).map { piece ->
+                if (!hasPerpendicularJoist(input, g, piece.end))
+                    add("Every physical end-boundary splice must fall at a perpendicular joist intersection.")
+                u(g, piece.end)
+            }
+        }
+        physicalSplices.chunked(2).forEach { pair ->
+            if (pair[0].any { first -> pair[1].any { second -> abs(first - second) < EPS } })
+                add("Double end-boundary splice positions must be staggered between the two members.")
+        }
     }.distinct()
 
     private fun pictureFrameErrors(input: DeckInput, g: DeckGeometry): List<String> = buildList {
