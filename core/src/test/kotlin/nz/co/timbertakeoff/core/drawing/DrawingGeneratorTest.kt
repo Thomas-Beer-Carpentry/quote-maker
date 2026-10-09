@@ -136,7 +136,7 @@ class DrawingGeneratorTest {
 
     @Test fun `picture frame mitres and first infill rip come from calculated board geometry`() {
         listOf(FramingOrientation.LENGTHWAYS, FramingOrientation.WIDTHWAYS).forEach { orientation ->
-            val input = DeckInput(widthMm = 3900.0, lengthMm = 5200.0, decking = Profiles.decking[1],
+            val input = DeckInput(widthMm = 3670.0, lengthMm = 4800.0, decking = Profiles.decking[1],
                 pictureFrame = true, orientation = orientation)
             val calculated = result(input)
             SheetSize.entries.forEach { size ->
