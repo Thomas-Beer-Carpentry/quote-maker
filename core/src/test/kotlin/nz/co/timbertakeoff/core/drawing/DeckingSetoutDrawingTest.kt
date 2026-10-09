@@ -128,6 +128,14 @@ class DeckingSetoutDrawingTest {
                 val callouts = text.filter { it.text.endsWith(" OVERHANG") || it.text.startsWith("INFILL RIP ") ||
                     it.text.startsWith("START ") || it.text == "PF" }
                 annotations.forEach { label -> callouts.forEach { assertSeparate(label, it) } }
+                // Thin leaders and dimension extension lines must not run through these
+                // labels. Arrowheads / dimension ticks are deliberately separate notation.
+                val annotationLines = sheet.elements.filterIsInstance<DrawingElement.Line>()
+                    .filter { it.weightMm == 0.13 && !it.dashed }
+                annotations.forEach { label -> annotationLines.forEach { line ->
+                    assertFalse("A leader or extension line must not cross '${label.text}' at ${size.name}",
+                        lineIntersects(textBounds(label), line))
+                } }
                 assertEquals("Direction label is legible without rotating through board lines", 0.0,
                     annotations.single { it.text == "BOARD DIRECTION" }.rotationDegrees, 0.0)
             } }
@@ -149,6 +157,28 @@ class DeckingSetoutDrawingTest {
         val b = textBounds(second)
         assertTrue("Labels '${first.text}' and '${second.text}' must remain separate",
             a.right < b.left || b.right < a.left || a.bottom < b.top || b.bottom < a.top)
+    }
+
+    /** Clip a finite line segment to the conservative text box, including diagonal leaders. */
+    private fun lineIntersects(box: TextBox, line: DrawingElement.Line): Boolean {
+        var from = 0.0
+        var to = 1.0
+        val axes = listOf(
+            listOf(line.x1, line.x2 - line.x1, box.left, box.right),
+            listOf(line.y1, line.y2 - line.y1, box.top, box.bottom)
+        )
+        axes.forEach { (origin, delta, minimum, maximum) ->
+            if (abs(delta) < 0.000000001) {
+                if (origin < minimum || origin > maximum) return false
+            } else {
+                val a = (minimum - origin) / delta
+                val b = (maximum - origin) / delta
+                from = maxOf(from, minOf(a, b))
+                to = minOf(to, maxOf(a, b))
+                if (from > to) return false
+            }
+        }
+        return true
     }
 
     private fun result(input: DeckInput): DeckResult {

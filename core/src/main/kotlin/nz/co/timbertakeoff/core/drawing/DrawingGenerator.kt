@@ -213,7 +213,14 @@ object DrawingGenerator {
         val firstP = plan.point(Point(first.origin.x + i.overhangMm, first.origin.y + i.overhangMm))
         deckingDatum(b, plan, firstP, first)
         val ripAlongRun = min(5.0, first.lengthMm / plan.scale / 2.0)
-        if (ripped) leader(b, firstP.x + (if (alongX) ripAlongRun else first.widthMm / plan.scale / 2.0), firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else ripAlongRun), plan.x + 8.0, plan.y - 15.0, "${if (i.pictureFrame) "INFILL RIP" else "START"} ${mm(first.widthMm)}", false)
+        if (ripped) {
+            // A horizontal-board rip leader lands left of the plan so its diagonal does
+            // not cross the datum text above the first infill edge.
+            leader(b, firstP.x + (if (alongX) ripAlongRun else first.widthMm / plan.scale / 2.0),
+                firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else ripAlongRun),
+                plan.x + if (alongX) -12.0 else 8.0, plan.y - 15.0,
+                "${if (i.pictureFrame) "INFILL RIP" else "START"} ${mm(first.widthMm)}", alongX)
+        }
         if (i.pictureFrame) {
             val frameBoard = g.boards.filter { it.role == DeckBoardRole.PICTURE_FRAME }.maxBy { board -> board.outline.map { it.x }.average() }
             val centre = Point(frameBoard.outline.map { it.x }.average(), frameBoard.outline.map { it.y }.average())
