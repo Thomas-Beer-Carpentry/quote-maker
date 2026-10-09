@@ -3,6 +3,7 @@ package nz.co.timbertakeoff.ui
 import android.content.Context
 import android.print.PrintManager
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
@@ -42,7 +43,6 @@ import kotlinx.coroutines.withContext
 import nz.co.timbertakeoff.core.CalculationOutcome
 import nz.co.timbertakeoff.core.DeckResult
 import nz.co.timbertakeoff.core.FramingOrientation
-import nz.co.timbertakeoff.core.MaterialConsolidator
 import nz.co.timbertakeoff.core.OrientationAlternative
 import nz.co.timbertakeoff.core.Profiles
 import nz.co.timbertakeoff.core.drawing.DrawingGenerator
@@ -71,7 +71,7 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
     var tab by rememberSaveable(task.id) { mutableStateOf(0) }
     val imeVisible = WindowInsets.isImeVisible
     LaunchedEffect(tab, imeVisible) {
-        if (tab != 1) {
+        if (tab != 0) {
             // Popup dismissal can complete a pending IME show after the tab click's hide.
             // React to actual insets after the parameter editors have left composition.
             withFrameNanos { }
@@ -81,9 +81,21 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
     }
     val parsed = remember(task.id, task.inputJson) { runCatching { DeckDraft.fromJson(task.inputJson) } }
     val draft = parsed.getOrNull()
-    // A new input key gets a fresh empty state immediately; an obsolete valid plan is never displayed.
+    var requestedInputJson by rememberSaveable(task.id) { mutableStateOf<String?>(null) }
+    var requestedTypeId by rememberSaveable(task.id) { mutableStateOf<String?>(null) }
+    var calculationRequest by rememberSaveable(task.id) { mutableStateOf(0) }
+    var showMaterialsAfterCalculation by rememberSaveable(task.id) { mutableStateOf(false) }
+    // Editing a draft invalidates its result immediately, while autosave remains independent.
     val outcome = remember(task.typeId, task.inputJson) { mutableStateOf<CalculationOutcome?>(null) }
-    LaunchedEffect(task.typeId, task.inputJson) {
+    var calculating by remember(task.typeId, task.inputJson) { mutableStateOf(false) }
+    LaunchedEffect(task.typeId, task.inputJson, requestedInputJson, requestedTypeId, calculationRequest) {
+        if (requestedInputJson != task.inputJson || requestedTypeId != task.typeId) {
+            requestedInputJson = null
+            requestedTypeId = null
+            showMaterialsAfterCalculation = false
+            return@LaunchedEffect
+        }
+        calculating = true
         outcome.value = if (draft == null) CalculationOutcome.Invalid(listOf("Saved inputs could not be read: ${parsed.exceptionOrNull()?.message}."))
         else withContext(Dispatchers.Default) {
             try {
@@ -94,6 +106,9 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
                 CalculationOutcome.Invalid(listOf("Calculation could not complete: ${error.message}."))
             }
         }
+        calculating = false
+        if (outcome.value is CalculationOutcome.Success && showMaterialsAfterCalculation) tab = 1
+        showMaterialsAfterCalculation = false
     }
     val result = (outcome.value as? CalculationOutcome.Success)?.result
     val exporting by model.pdfExportBusy.collectAsStateWithLifecycle()
@@ -105,41 +120,57 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
         ScrollableTabRow(selectedTabIndex = tab, edgePadding = 12.dp) {
-            listOf("Drawings", "Parameters", "Materials").forEachIndexed { index, title ->
+            listOf("Inputs", "Materials", "Drawings").forEachIndexed { index, title ->
                 Tab(selected = tab == index, onClick = {
                     focusManager.clearFocus(force = true)
                     keyboard?.hide()
+                    showMaterialsAfterCalculation = false
                     tab = index
                 }, text = { Text(title) })
             }
         }
         when (tab) {
-            1 -> ScreenColumn {
-                if (draft == null) Notice("The saved task inputs are unreadable: ${parsed.exceptionOrNull()?.message}. They have been preserved on this device.", error = true)
-                else DeckParameters(task, draft, model)
-                OutcomeNotice(outcome.value)
-                if (result != null) OrientationComparison(result)
+            0 -> Column(modifier = Modifier.weight(1f)) {
+                Box(modifier = Modifier.weight(1f)) {
+                    ScreenColumn {
+                        if (draft == null) Notice("The saved task inputs are unreadable: ${parsed.exceptionOrNull()?.message}. They have been preserved on this device.", error = true)
+                        else DeckParameters(task, draft, model)
+                        if (calculating || outcome.value is CalculationOutcome.Invalid) OutcomeNotice(outcome.value, calculating)
+                        if (result != null) OrientationComparison(result)
+                    }
+                }
+                Button(onClick = {
+                    focusManager.clearFocus(force = true)
+                    keyboard?.hide()
+                    requestedInputJson = task.inputJson
+                    requestedTypeId = task.typeId
+                    showMaterialsAfterCalculation = true
+                    calculationRequest += 1
+                }, enabled = draft != null && !calculating,
+                    modifier = Modifier.fillMaxWidth().padding(16.dp).heightIn(min = 56.dp)) {
+                    Text(if (calculating) "Calculating…" else "Calculate")
+                }
             }
-            2 -> ScreenColumn {
-                if (result == null) OutcomeNotice(outcome.value)
+            1 -> ScreenColumn {
+                if (result == null) {
+                    OutcomeNotice(outcome.value, calculating)
+                    Button(onClick = { tab = 0 }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Review inputs") }
+                }
                 if (result != null) {
-                    Materials(result.materials)
+                    OverallMaterials(result.materials)
+                    MaterialBreakdown(result.materials)
                     var showAssumptions by remember(task.id) { mutableStateOf(false) }
                     TextButton(onClick = { showAssumptions = !showAssumptions }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
                         Text(if (showAssumptions) "Hide calculation assumptions" else "Show calculation assumptions")
                     }
                     if (showAssumptions) result.notes.forEach { Notice(it) }
-                    Text("Task consolidated summary", style = MaterialTheme.typography.titleLarge)
-                    Materials(MaterialConsolidator.consolidate(result.materials), consolidated = true)
                 }
             }
             else -> {
                 if (result != null) DrawingWorkspace(result, job, client, task, exporting, onExportPdf)
                 else ScreenColumn {
-                    OutcomeNotice(outcome.value)
-                    if (outcome.value is CalculationOutcome.Invalid) {
-                        Button(onClick = { tab = 1 }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Review parameters") }
-                    }
+                    OutcomeNotice(outcome.value, calculating)
+                    Button(onClick = { tab = 0 }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) { Text("Review inputs") }
                 }
             }
         }
@@ -147,9 +178,10 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
 }
 
 @Composable
-private fun OutcomeNotice(outcome: CalculationOutcome?) {
+private fun OutcomeNotice(outcome: CalculationOutcome?, calculating: Boolean = false) {
     when (outcome) {
-        null -> { CircularProgressIndicator(); Text("Calculating the current layout…") }
+        null -> if (calculating) { CircularProgressIndicator(); Text("Calculating the current layout…") }
+            else Notice("Enter or review the inputs, then tap Calculate to update materials and drawings.")
         is CalculationOutcome.Invalid -> {
             Notice("Layout cannot be calculated\n" + outcome.errors.joinToString("\n") { "• $it" }, error = true)
             if (outcome.alternatives.isNotEmpty()) Alternatives(outcome.alternatives, null)

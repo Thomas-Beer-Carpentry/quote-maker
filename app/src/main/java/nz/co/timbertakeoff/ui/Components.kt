@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import nz.co.timbertakeoff.core.MaterialCategory
+import nz.co.timbertakeoff.core.MaterialConsolidator
 import nz.co.timbertakeoff.core.MaterialLine
 import java.util.Locale
 
@@ -108,9 +109,48 @@ internal fun NameDialog(title: String, label: String, onDismiss: () -> Unit, onC
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = { Field(label, name, { name = it }) },
-        confirmButton = { Button(onClick = { onCreate(name); onDismiss() }, enabled = name.isNotBlank()) { Text("Create") } },
+        confirmButton = {
+            val focusManager = LocalFocusManager.current
+            val keyboard = LocalSoftwareKeyboardController.current
+            Button(onClick = {
+                focusManager.clearFocus(force = true)
+                keyboard?.hide()
+                onCreate(name)
+                onDismiss()
+            }, enabled = name.isNotBlank()) { Text("Create") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
+}
+
+@Composable
+internal fun OverallMaterials(lines: List<MaterialLine>, heading: String = "Overall materials") {
+    Text(heading, style = MaterialTheme.typography.titleLarge)
+    Text("Identical materials combined. Exact quantities; no purchasing waste allowance.", style = MaterialTheme.typography.bodySmall)
+    val totals = remember(lines) { MaterialConsolidator.consolidate(lines) }
+    if (totals.isEmpty()) {
+        EmptyState("No material quantities yet", "Complete a valid deck task to calculate the takeoff.")
+        return
+    }
+    totals.forEach { line ->
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("${number(line.quantity)} ${line.key.unit}", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(line.key.type, style = MaterialTheme.typography.titleMedium)
+                Text(line.key.specification, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MaterialBreakdown(lines: List<MaterialLine>) {
+    if (lines.isEmpty()) return
+    var expanded by remember { mutableStateOf(false) }
+    OutlinedButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)) {
+        Text(if (expanded) "Hide material breakdown" else "Show material breakdown")
+    }
+    if (expanded) Materials(lines)
 }
 
 @Composable

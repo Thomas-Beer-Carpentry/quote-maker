@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -63,17 +64,44 @@ class CarpenterWorkflowTest {
         click("+ Add deck task", scroll = true)
         replace("Task name", deckName, scroll = false)
         click("Create")
-        waitForText("Construction drawing workspace")
+        waitForText("Deck specifications")
         waitForKeyboardHidden()
+        compose.onNodeWithText("Inputs").assertIsSelected()
+        val tabPositions = listOf("Inputs", "Materials", "Drawings").map {
+            compose.onNodeWithText(it).fetchSemanticsNode().boundsInRoot.left
+        }
+        assertTrue("Inputs come first, materials second and drawings last", tabPositions.zipWithNext().all { (a, b) -> a < b })
+        compose.onNodeWithText("Calculate").assertExists()
+        click("Materials")
+        compose.onNodeWithText("Overall materials").assertDoesNotExist()
+        compose.onNodeWithText("Export all PDF").assertDoesNotExist()
+        click("Inputs")
+        click("Calculate")
+        waitForText("Overall materials")
+        compose.onNodeWithText("Materials").assertIsSelected()
+        waitForKeyboardHidden()
+        // Independent expected default: 67.08 m joists/boundaries + 4.17 m nogs.
+        compose.onNodeWithText("71.25 lm").assertExists()
+        assertEquals("Identical joist/nog timber has one overall row", 1,
+            compose.onAllNodesWithText("140 × 45 mm · H3.2 treated radiata pine").fetchSemanticsNodes().size)
+        compose.onNodeWithText("Exact material takeoff").assertDoesNotExist()
+        click("Show material breakdown", scroll = true)
+        waitForText("Exact material takeoff")
+        click("Nogs / blocking", scroll = true)
+        waitForText("4.17 lm")
+        click("Hide material breakdown", scroll = true)
 
-        click("Parameters")
+        click("Inputs")
         replace("1. Deck width (mm)", "")
         click("Drawings")
-        waitForText("Layout cannot be calculated", substring = true)
+        waitForText("then tap Calculate", substring = true)
         compose.onNodeWithText("Construction drawing workspace").assertDoesNotExist()
         compose.onNodeWithText("Export all PDF").assertDoesNotExist()
+        click("Inputs")
+        click("Calculate")
+        waitForText("Layout cannot be calculated", substring = true)
+        compose.onNodeWithText("Inputs").assertIsSelected()
 
-        click("Parameters")
         replace("1. Deck width (mm)", "4200")
         replace("2. Deck length (mm)", "5200")
         click("90 × 19 mm", scroll = true)
@@ -81,18 +109,27 @@ class CarpenterWorkflowTest {
         replace("Decking overhang on all four sides (mm)", "25")
         click("Automatic", scroll = true)
         compose.onNode(hasText("Widthways · bearers parallel to deck width") and hasClickAction()).performClick()
+        click("Calculate")
+        waitForText("Overall materials")
+        waitForKeyboardHidden()
+        waitForText("153 lm")
+        screenshot("workflow-02-materials.png")
         click("Drawings")
         waitForText("Construction drawing workspace")
         waitForKeyboardHidden()
         click("Drawing sheet", scroll = true, clickNode = false)
+        waitForText("Export all PDF")
         screenshot("workflow-01-framing.png")
 
         click("Materials")
+        waitForText("Overall materials")
+        click("Show material breakdown", scroll = true)
         waitForText("Exact material takeoff")
         waitForKeyboardHidden()
-        compose.onAllNodesWithText("Decking")[0].performScrollTo().performClick()
-        waitForText("140 × 19 mm · finished 140 mm × 19 mm", substring = true)
-        screenshot("workflow-02-materials.png")
+        compose.onNode(hasText("Decking") and hasClickAction()).performScrollTo().performClick()
+        waitForText("36 boards")
+        waitForText("Cut lengths: 36 × 4250 mm")
+        screenshot("workflow-04-breakdown.png")
 
         // Wait for actual database content, rather than trusting the optimistic screen alone.
         compose.waitUntil(60_000) {
@@ -106,12 +143,12 @@ class CarpenterWorkflowTest {
         }
 
         click("‹ Back")
-        waitForText("Consolidated exact materials")
+        waitForText("Overall job materials")
         click("+ Add deck task", scroll = true)
         replace("Task name", landingName, scroll = false)
         click("Create")
-        waitForText("Construction drawing workspace")
-        click("Parameters")
+        waitForText("Deck specifications")
+        compose.onNodeWithText("Inputs").assertIsSelected()
         assertField("1. Deck width (mm)", "3600")
 
         val savedDecks = runBlocking { app.repository.tasks.first() }
@@ -126,7 +163,7 @@ class CarpenterWorkflowTest {
         assertEquals("021 555 010", savedClient.phone)
         assertEquals(jobName, savedJob.name)
 
-        // A fresh Activity/ViewModel re-reads the saved records and recalculates its plans.
+        // Reopening begins with saved inputs; Calculate produces the latest materials/plans.
         scenario.close()
         scenario = ActivityScenario.launch(MainActivity::class.java)
         waitForText("Set out. Count materials. Get back to work.")
@@ -135,10 +172,8 @@ class CarpenterWorkflowTest {
         click(jobName, scroll = true)
         waitForText(deckName)
         click(deckName, scroll = true)
-        waitForText("Construction drawing workspace")
-        waitForText("Drawing sheet")
-        screenshot("workflow-03-reopened.png")
-        click("Parameters")
+        waitForText("Deck specifications")
+        compose.onNodeWithText("Inputs").assertIsSelected()
         assertField("1. Deck width (mm)", "4200")
         assertField("2. Deck length (mm)", "5200")
         assertField("Decking overhang on all four sides (mm)", "25")
@@ -146,6 +181,19 @@ class CarpenterWorkflowTest {
         waitForText("1. Deck width (mm)")
         assertField("1. Deck width (mm)", "4200")
         assertField("2. Deck length (mm)", "5200")
+        compose.onNodeWithText("Inputs").assertIsSelected()
+        screenshot("workflow-00-inputs.png")
+        click("Calculate")
+        waitForText("Overall materials")
+        click("Drawings")
+        waitForText("Drawing sheet")
+        waitForText("Export all PDF")
+        scenario.recreate()
+        waitForText("Drawing sheet")
+        waitForText("Export all PDF")
+        compose.onNodeWithText("Drawings").assertIsSelected()
+        waitForKeyboardHidden()
+        screenshot("workflow-03-reopened.png")
     }
 
     private fun waitForText(text: String, substring: Boolean = false) {

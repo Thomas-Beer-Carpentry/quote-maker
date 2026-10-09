@@ -96,8 +96,26 @@ class DrawingGeneratorTest {
         val texts = schedules.flatMap(::texts)
         cuts.forEach { cut -> assertTrue("Missing cut $cut", texts.contains("1 × ${DrawingGenerator.mm(cut)} mm")) }
         assertEquals(100, CutSchedule.entries(cuts).sumOf { it.pieces })
-        assertTrue(texts.any { it == "CONSOLIDATED MATERIAL SUMMARY" })
+        assertTrue(texts.any { it == "OVERALL MATERIALS" })
+        assertTrue(texts.indexOf("OVERALL MATERIALS") < texts.indexOf("MATERIAL BREAKDOWN"))
         assertTrue(texts.any { it == "${DrawingGenerator.amount(cuts.sum() / 1000.0)} lm" })
+    }
+
+    @Test fun `material schedule starts with combined profile totals before category cuts`() {
+        SheetSize.entries.forEach { size ->
+            val scheduleTexts = DrawingGenerator.generate(result(), sheetSize = size).drop(3).flatMap(::texts)
+            val overallStart = scheduleTexts.indexOf("OVERALL MATERIALS")
+            val breakdownStart = scheduleTexts.indexOf("MATERIAL BREAKDOWN")
+            assertTrue("Overall materials must precede the breakdown", overallStart >= 0 && breakdownStart > overallStart)
+            val overall = scheduleTexts.subList(overallStart, breakdownStart)
+            assertEquals("All default 140 × 45 joists and nogs share one overall line", 1, overall.count { it.contains("140 × 45 mm") })
+            assertTrue("Joists, boundary joists and nogs total 71.25 lm", overall.contains("71.25 lm"))
+            assertTrue("Overall totals must not be interrupted by cut schedules", overall.none { it.contains("exact cut schedule") })
+            val breakdown = scheduleTexts.drop(breakdownStart)
+            assertTrue(breakdown.contains("JOISTS AND BOUNDARY JOISTS"))
+            assertTrue(breakdown.contains("NOGS / BLOCKING"))
+            assertTrue(breakdown.any { it.contains("exact cut schedule") })
+        }
     }
 
     @Test fun `pile section is derived from input profile depths and finished height`() {

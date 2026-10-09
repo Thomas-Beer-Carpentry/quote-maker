@@ -88,7 +88,10 @@ internal fun JobScreen(job: JobEntity, client: ClientEntity?, tasks: List<TaskEn
                     error = true,
                 )
             }
-            if (tasks.isNotEmpty()) Materials(result.lines, consolidated = true)
+            if (tasks.isNotEmpty()) {
+                OverallMaterials(result.lines, heading = "Overall job materials")
+                MaterialBreakdown(result.taskLines.values.flatten())
+            }
         }
         Notice("Preliminary estimating / set-out only. Exact quantities do not include waste allowances or structural verification.")
     }

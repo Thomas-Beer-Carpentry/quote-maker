@@ -22,6 +22,12 @@ internal object MaterialDrawingGenerator {
             val lines = wrap(value, maxChars)
             lines.forEachIndexed { index, text -> rows += Row(if (index == 0) kind else RowKind.NOTE, text, if (index == 0) quantity else "") }
         }
+        rows += Row(RowKind.SECTION, "Overall materials")
+        MaterialConsolidator.consolidate(result.materials).forEach { line ->
+            addWrapped(RowKind.MATERIAL, "${line.key.type} · ${line.key.specification}", "${DrawingGenerator.amount(line.quantity)} ${line.key.unit}")
+        }
+        addWrapped(RowKind.NOTE, "Identical specifications and units combined. Exact quantities; no waste allowance.")
+        rows += Row(RowKind.SECTION, "Material breakdown")
         MaterialCategory.entries.forEach { category ->
             val lines = result.materials.filter { it.category == category }
             if (lines.isEmpty()) return@forEach
@@ -37,10 +43,6 @@ internal object MaterialDrawingGenerator {
                 if (category == MaterialCategory.DECKING) addWrapped(RowKind.NOTE, "${result.geometry.boards.size} boards · actual finished width ${DrawingGenerator.mm(result.input.actualDeckingWidthMm)} mm · starting width ${DrawingGenerator.mm(result.geometry.startingBoardWidthMm)} mm")
             }
         }
-        rows += Row(RowKind.SECTION, "Consolidated material summary")
-        MaterialConsolidator.consolidate(result.materials).forEach { line ->
-            addWrapped(RowKind.MATERIAL, "${line.key.type} · ${line.key.specification}", "${DrawingGenerator.amount(line.quantity)} ${line.key.unit}")
-        }
         rows += Row(RowKind.NOTE, "Exact quantities. No waste allowance or stock-length optimisation.")
         rows += Row(RowKind.NOTE, "Concrete bag counts are rounded up; other calculated quantities retain exact totals.")
         val sheets = mutableListOf<DrawingSheet>()
@@ -51,7 +53,7 @@ internal object MaterialDrawingGenerator {
             val b = SheetBuilder(size)
             val code = if (page == 1) "M01" else "M01.$page"
             DrawingGenerator.frame(b, code, "Material takeoff", title, null)
-            b.text(15.0, 40.0, "MATERIAL / SPECIFICATION / EXACT CUT LENGTH", 2.5, bold = true)
+            b.text(15.0, 40.0, "MATERIAL / SPECIFICATION / BREAKDOWN", 2.5, bold = true)
             b.text(size.widthMm - 16.0, 40.0, "EXACT QUANTITY", 2.5, TextAlign.RIGHT, bold = true)
             b.line(14.0, 43.0, size.widthMm - 14.0, 43.0, 0.3)
             val bottom = size.heightMm - 43.0
