@@ -103,8 +103,12 @@ object DrawingGenerator {
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.JOIST }, "J1")
         sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.NOG }, "N1")
         if (input.pictureFrame) {
-            sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_SUPPORT }, "PF1")
-            sampleLabel(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_PACKER }, "PK1")
+            val landingX = plan.x + input.widthMm / plan.scale +
+                min(26.0, max(4.0, size.widthMm - 77.0 - plan.x - input.widthMm / plan.scale - 16.0))
+            memberCallout(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_SUPPORT },
+                "PF1", landingX, plan.y - 8.0)
+            memberCallout(b, plan, g.members.firstOrNull { it.kind == MemberKind.PICTURE_FRAME_PACKER },
+                "PK1", landingX, plan.y - 14.0)
             pictureFrameSupportDimensions(b, plan, g)
         }
         val x = size.widthMm - 77.0
@@ -201,10 +205,10 @@ object DrawingGenerator {
         val ripAlongRun = min(5.0, first.lengthMm / plan.scale / 2.0)
         if (ripped) leader(b, firstP.x + (if (alongX) ripAlongRun else first.widthMm / plan.scale / 2.0), firstP.y + (if (alongX) first.widthMm / plan.scale / 2.0 else ripAlongRun), plan.x + 8.0, plan.y - 15.0, "${if (i.pictureFrame) "INFILL RIP" else "START"} ${mm(first.widthMm)}", false)
         if (i.pictureFrame) {
-            val frameBoard = g.boards.first { it.role == DeckBoardRole.PICTURE_FRAME }
+            val frameBoard = g.boards.filter { it.role == DeckBoardRole.PICTURE_FRAME }.maxBy { board -> board.outline.map { it.x }.average() }
             val centre = Point(frameBoard.outline.map { it.x }.average(), frameBoard.outline.map { it.y }.average())
             val fp = plan.point(Point(centre.x + i.overhangMm, centre.y + i.overhangMm))
-            leader(b, fp.x, fp.y, plan.x + width / plan.scale + 3.0, plan.y - 8.0, "PF", false)
+            leader(b, fp.x, fp.y, plan.x + width / plan.scale + 6.0, fp.y - 6.0, "PF", false)
         }
         scaleBar(b, plan, size)
         return b.sheet("D02", "Decking plan", plan.scale)
@@ -254,7 +258,8 @@ object DrawingGenerator {
             }
         }
         b.line(sx - 9.0, ground, sx + run + 9.0, ground, 0.45)
-        b.text(sx, ground - 2.5, if (inConcrete) "FLAT LEVEL GROUND" else "EXISTING CONCRETE / GROUND LEVEL", 2.5)
+        b.text(sx, ground + if (inConcrete) -2.5 else 6.0,
+            if (inConcrete) "FLAT LEVEL GROUND" else "EXISTING CONCRETE / GROUND LEVEL", 2.5)
         if (!inConcrete) {
             var hatchX = sx - 7.0
             while (hatchX < sx + run + 7.0) {
@@ -400,6 +405,13 @@ object DrawingGenerator {
         val x = (a.x + z.x) / 2.0
         val y = (a.y + z.y) / 2.0
         b.text(x + 2.0, y - 2.0, name, 2.5, bold = true)
+    }
+
+    private fun memberCallout(b: SheetBuilder, t: PlanTransform, member: TimberMember?, name: String, x: Double, y: Double) {
+        if (member == null) return
+        val a = t.point(member.start)
+        val z = t.point(member.end)
+        leader(b, (a.x + z.x) / 2.0, (a.y + z.y) / 2.0, x, y, name, false)
     }
 
     private fun overallDimensions(b: SheetBuilder, p: PlanTransform, width: Double, length: Double) {

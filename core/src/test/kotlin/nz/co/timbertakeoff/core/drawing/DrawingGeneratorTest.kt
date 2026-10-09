@@ -253,6 +253,51 @@ class DrawingGeneratorTest {
         }
     }
 
+    @Test fun `picture frame callouts remain distinct and bracket ground label clears post outlines`() {
+        listOf(FramingOrientation.LENGTHWAYS, FramingOrientation.WIDTHWAYS).forEach { orientation ->
+            val calculated = result(DeckInput(decking = Profiles.decking[1], pictureFrame = true,
+                orientation = orientation, pileConnection = PileConnection.EXISTING_CONCRETE_BRACKETS))
+            SheetSize.entries.forEach { size ->
+                val sheets = DrawingGenerator.generate(calculated, sheetSize = size)
+                val framingText = sheets[0].elements.filterIsInstance<DrawingElement.Text>()
+                val pf = framingText.single { it.text == "PF1" }
+                val pk = framingText.single { it.text == "PK1" }
+                val nog = framingText.single { it.text == "N1" }
+                assertLabelsSeparate(pf, pk)
+                assertLabelsSeparate(pf, nog)
+                assertLabelsSeparate(pk, nog)
+                val deckingText = sheets[1].elements.filterIsInstance<DrawingElement.Text>()
+                val frame = deckingText.single { it.text == "PF" }
+                val overhang = deckingText.single { it.text.endsWith(" OVERHANG") }
+                assertLabelsSeparate(frame, overhang)
+                val section = sheets[2]
+                val ground = section.elements.filterIsInstance<DrawingElement.Text>()
+                    .single { it.text == "EXISTING CONCRETE / GROUND LEVEL" }
+                val scale = section.scaleDenominator!!
+                val posts = section.elements.filterIsInstance<DrawingElement.Rect>().filter { rect ->
+                    abs(rect.width - 125.0 / scale) < 0.00001 &&
+                        abs(rect.height - calculated.geometry.pileAboveGroundMm / scale) < 0.00001
+                }
+                assertTrue(posts.isNotEmpty())
+                posts.forEach { post -> assertTrue("Ground text must sit below the post and concrete surface notation",
+                    ground.y - ground.sizeMm > post.y + post.height + 2.3) }
+            }
+        }
+    }
+
+    /** Conservative Latin label bounds; the regression concerns placement, independent of exact font shaping. */
+    private fun assertLabelsSeparate(first: DrawingElement.Text, second: DrawingElement.Text) {
+        fun left(text: DrawingElement.Text): Double {
+            val width = text.text.length * text.sizeMm * 0.65
+            return text.x - when (text.align) { TextAlign.LEFT -> 0.0; TextAlign.CENTER -> width / 2.0; TextAlign.RIGHT -> width }
+        }
+        val horizontallySeparate = left(first) + first.text.length * first.sizeMm * 0.65 < left(second) ||
+            left(second) + second.text.length * second.sizeMm * 0.65 < left(first)
+        val verticallySeparate = first.y + first.sizeMm * 0.2 < second.y - second.sizeMm ||
+            second.y + second.sizeMm * 0.2 < first.y - first.sizeMm
+        assertTrue("Drawing labels '${first.text}' and '${second.text}' must not collide", horizontallySeparate || verticallySeparate)
+    }
+
     private fun texts(sheet: DrawingSheet) = sheet.elements.filterIsInstance<DrawingElement.Text>().map { it.text }
     private fun bound(sheet: DrawingSheet, x: Double, y: Double) {
         assertTrue("${sheet.code} coordinate ($x,$y) must be finite", x.isFinite() && y.isFinite())
