@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
+import android.view.accessibility.AccessibilityNodeInfo
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.hasText
@@ -252,6 +253,29 @@ class LargeBoundaryWorkflowTest {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         instrumentation.waitForIdleSync()
+        // API 35 emulator startup can leave the launcher ANR over a healthy app.
+        // Dismiss only that exact system dialog; an estimator ANR stays visible.
+        val automation = instrumentation.uiAutomation
+        val window = automation.rootInActiveWindow
+        if (window != null && window.findAccessibilityNodeInfosByText("Pixel Launcher isn't responding")
+                .any { it.text?.toString() == "Pixel Launcher isn't responding" }) {
+            var closeAction = window.findAccessibilityNodeInfosByText("Close app")
+                .firstOrNull { it.text?.toString() == "Close app" }
+            while (closeAction != null && (!closeAction.isClickable || !closeAction.isEnabled)) {
+                closeAction = closeAction.parent
+            }
+            assertTrue("Dismiss the confirmed Pixel Launcher ANR before capturing $name",
+                closeAction?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true)
+            automation.waitForIdle(500, 10_000)
+            compose.waitUntil(10_000) {
+                automation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Pixel Launcher isn't responding")
+                    ?.none { it.text?.toString() == "Pixel Launcher isn't responding" } == true
+            }
+            instrumentation.waitForIdleSync()
+            assertTrue("The confirmed Pixel Launcher ANR must be gone before capturing $name",
+                automation.rootInActiveWindow?.findAccessibilityNodeInfosByText("Pixel Launcher isn't responding")
+                    ?.none { it.text?.toString() == "Pixel Launcher isn't responding" } == true)
+        }
         val image = instrumentation.uiAutomation.takeScreenshot()
         assertNotNull("Emulator should supply a screen capture", image)
         checkNotNull(image).let { bitmap ->
