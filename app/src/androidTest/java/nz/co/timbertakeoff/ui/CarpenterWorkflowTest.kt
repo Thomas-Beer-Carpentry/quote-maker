@@ -5,6 +5,7 @@ import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
@@ -101,6 +102,7 @@ class CarpenterWorkflowTest {
         click("Calculate")
         waitForText("Layout cannot be calculated", substring = true)
         compose.onNodeWithText("Inputs").assertIsSelected()
+        compose.onNodeWithText("Deck width (mm) must be a finite number.").assertIsDisplayed()
 
         replace("1. Deck width (mm)", "4200")
         replace("2. Deck length (mm)", "5200")

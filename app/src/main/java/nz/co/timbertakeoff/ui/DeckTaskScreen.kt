@@ -36,6 +36,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -138,6 +139,11 @@ internal fun DeckTaskScreen(task: TaskEntity, job: JobEntity?, client: ClientEnt
                         if (calculating || outcome.value is CalculationOutcome.Invalid) OutcomeNotice(outcome.value, calculating)
                         if (result != null) OrientationComparison(result)
                     }
+                }
+                (outcome.value as? CalculationOutcome.Invalid)?.errors?.firstOrNull()?.let { error ->
+                    Text(error, color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp))
                 }
                 Button(onClick = {
                     focusManager.clearFocus(force = true)
